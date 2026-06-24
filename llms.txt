@@ -1,0 +1,132 @@
+# Vectros API — Integration Context
+
+Vectros is the secure data, document, search, and AI back-end that developers
+build apps on — a typed data store, a document pipeline, hybrid search,
+citation-grounded retrieval, multi-tenant isolation, least-privilege access
+control, and an audited compliance posture, behind one coherent API plus a Node
+SDK, a CLI, and an MCP server.
+
+The current surface spans: Documents and structured Records (with schema-defined
+indexing, lookup/range queries, and folders), hybrid Search (BM25 + vector, RRF
+fusion), grounded inference (chat, RAG, document-ask, model catalog), the
+Identity plane (users, orgs, clients), per-customer isolation with scoped keys
+and app-contexts, read-access logging, GDPR erasure and export, and billing/usage
+reporting.
+
+## Recommended integration paths
+
+Most integrations should NOT hand-roll HTTP. Reach for a client:
+
+- **Node SDK (`@vectros-ai/sdk`)** — the typed, recommended path for application
+  code. `npm install @vectros-ai/sdk`, construct one client with a token and
+  environment, then call sub-clients grouped by area (`records`, `schemas`,
+  `documents`, `folders`, `search`, `inference`, `identity`, `auth`). Generated
+  from the same spec that drives the API, so method names and types match the API
+  exactly. Java and Python are also generated; Node is the verified reference.
+- **CLI (`@vectros-ai/cli`, `vectros`)** — provision from a terminal or CI:
+  blueprints, app-contexts, identities, scoped keys, and a one-command MCP
+  credential bootstrap (`npx -y @vectros-ai/cli bootstrap`). No code, no handling
+  your root key directly.
+- **MCP server (`@vectros-ai/mcp-server`)** — see below.
+
+## MCP server — call Vectros as native agent tools
+
+Vectros ships an official **Model Context Protocol** server
+(`@vectros-ai/mcp-server`) that exposes the data plane to MCP-aware agents
+(Claude Desktop, Cursor, Cline, Continue, VS Code, hosted platforms) as callable
+tools — search, records, documents, folders, and grounded inference — with no
+custom integration code. Drop one entry into the agent's MCP config:
+
+```json
+{
+  "mcpServers": {
+    "vectros": {
+      "command": "npx",
+      "args": ["-y", "@vectros-ai/mcp-server"],
+      "env": { "VECTROS_API_KEY": "ssk_live_..." }
+    }
+  }
+}
+```
+
+It is a thin shim over the SDK: tenant isolation and scope enforcement hold
+exactly as on the API — running the server does not expand a credential's reach.
+The tools are data-plane only (no web or third-party tools). Use a scoped
+permanent key (`ssk_*`) for desktop installs; the CLI `bootstrap` mints one and
+merges the config for you. Full details: https://docs.vectros.ai/guides/clients/mcp/
+
+## Base URL & Auth
+
+- **URL:** `https://api.vectros.ai/v1`
+- **Auth:** `Authorization: Bearer <token>`
+- **Root keys (`sk_live_*` / `sk_test_*`):** Long-lived, server-side only. Never
+  expose in client-side code or agent prompts.
+- **Scoped permanent keys (`ssk_*`):** Least-privilege keys carrying exactly the
+  permissions you grant. The right shape for agents and MCP installs.
+- **Scoped tokens (`st_*`):** Short-lived JWTs minted via `POST /v1/auth/token`.
+  Use for client-side or per-session access. Scoped to specific resources and
+  operations.
+
+## Core Architecture & Execution Rules
+
+1. **The Ingestion Split (Documents vs. Records):**
+   - Unstructured data (PDFs, raw text): `POST /v1/documents`
+   - Structured JSON data: define shape with `POST /v1/schemas`, then store and
+     index with `POST /v1/records`
+
+2. **The File Upload Handshake (CRITICAL — never skip this):**
+   - Files are NOT sent as multipart/form-data to the API.
+   - Step 1: `POST /v1/documents/upload` with filename and indexMode → get `uploadUrl`
+   - Step 2: HTTP PUT the raw file bytes directly to `uploadUrl`
+   - The system indexes automatically after the PUT completes.
+
+3. **Hybrid Search (BM25 + Vector — RRF fusion):**
+   - `POST /v1/search` fuses BM25 text scoring and semantic vector similarity via
+     Reciprocal Rank Fusion (RRF). Always default to `mode: HYBRID`.
+   - For exact phrase matching, set `textMode: PHRASE`.
+   - For broad semantic-only queries, set `mode: SEMANTIC`.
+
+4. **Context Hydration for LLMs (CRITICAL):**
+   - Search returns `chunkText` (the exact matched snippet) and `contextText`
+     (the broader surrounding passage).
+   - Always feed `contextText` to LLM prompts. Using `chunkText` alone causes
+     context fragmentation and degrades answer quality.
+
+5. **Identity Idempotency:**
+   - `POST /v1/users`, `/v1/orgs`, `/v1/clients` require an `externalId`.
+   - POSTing with an existing `externalId` safely returns the existing record —
+     no 409 Conflict, safe to retry.
+
+6. **Async Indexing & Webhooks:**
+   - Document and record indexing is asynchronous. The resource is created
+     immediately but `indexStatus` transitions PENDING_INDEX → INDEXED over seconds.
+   - Register webhooks to receive `document.indexed`, `document.failed`,
+     `record.indexed`, `record.failed` events.
+   - Webhook payloads are signed. Verify using the `X-Vectros-Signature` header
+     (Ed25519 or HMAC-SHA256 depending on your webhook configuration).
+
+7. **Pagination:**
+   - List, lookup, and version endpoints return a uniform cursor-paginated
+     envelope: `{ data, nextCursor }`. Pass `nextCursor` back as the `startFrom`
+     query param to fetch the next page; `null` means no more pages.
+   - Two endpoints are NOT enveloped: `POST /v1/search` (read `results`) and
+     `GET /v1/usage` (returns its payload directly).
+
+## Trust, isolation & compliance
+
+- Every data-plane resource is partitioned by an auth-derived context that fails
+  closed — lookups never cross a context boundary.
+- Sensitive fields are destroyed at write time and kept out of the search index;
+  read-time masking applies unless a caller is explicitly scoped to reveal.
+- Read-access logging, GDPR-style erasure and export, and per-customer
+  hard-delete are first-class operations.
+
+## Documentation & Full Specification
+
+- **Docs home:** https://docs.vectros.ai/ — concept, how-to, and reference guides,
+  plus a docs index for LLMs at https://docs.vectros.ai/llms.txt and the full
+  corpus at https://docs.vectros.ai/llms-full.txt
+- **Canonical OpenAPI spec:** https://docs.vectros.ai/openapi.yaml — OpenAPI 3.0.
+  Never hallucinate endpoints or fields. Always refer to the spec for exact
+  payload structures.
+- **Rendered API reference:** https://docs.vectros.ai/api-reference/
