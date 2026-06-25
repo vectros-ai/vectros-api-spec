@@ -33,7 +33,7 @@ maintained SDKs:
 
 ## Documentation
 
-Full guides and reference live at **[developers.vectros.ai](https://developers.vectros.ai)**.
+Full guides and reference live at **[docs.vectros.ai](https://docs.vectros.ai)**.
 
 ## Notes
 

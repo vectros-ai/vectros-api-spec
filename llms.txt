@@ -123,6 +123,10 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 
 ## Documentation & Full Specification
 
+- **No full corpus at this host.** `vectros.ai` serves only this `llms.txt`
+  integration brief — there is **no `https://vectros.ai/llms-full.txt`** (don't
+  request it; it 404s). The full documentation corpus lives on the docs host:
+  **https://docs.vectros.ai/llms-full.txt**.
 - **Docs home:** https://docs.vectros.ai/ — concept, how-to, and reference guides,
   plus a docs index for LLMs at https://docs.vectros.ai/llms.txt and the full
   corpus at https://docs.vectros.ai/llms-full.txt
