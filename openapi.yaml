@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users, organizations, and clients.
-  version: "0.29.7"
+  version: "0.29.8"
   contact:
     name: Vectros Developer Support
     url: https://developer.vectros.ai
