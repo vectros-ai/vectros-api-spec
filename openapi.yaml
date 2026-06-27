@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users, organizations, and clients.
-  version: "0.29.9"
+  version: "0.30.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -236,6 +236,21 @@ paths:
         "404":
           description: "The referenced context, user, or access profile does not exist\
             \ in your account."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/admin/keys/scoped/{keyId}:
@@ -292,6 +307,21 @@ paths:
         "404":
           description: No such key in your account. Keys belonging to another account
             return this same response.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/admin/logs:
@@ -469,6 +499,21 @@ paths:
           description: No app context exists with this contextId.
         "403":
           description: Not authorized.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/app-contexts:
@@ -545,6 +590,21 @@ paths:
           description: The contextId format is invalid.
         "403":
           description: Not authorized.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/app-contexts/{contextId}/roles:
@@ -638,6 +698,21 @@ paths:
           description: No app context exists with this contextId.
         "403":
           description: Not authorized.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/app-contexts/{contextId}/profiles/{principalId}:
@@ -716,6 +791,21 @@ paths:
             context.
         "403":
           description: Not authorized.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     delete:
@@ -745,6 +835,21 @@ paths:
             context.
         "403":
           description: Not authorized.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/app-contexts/{contextId}:
@@ -810,6 +915,21 @@ paths:
           description: No app context exists with this contextId.
         "403":
           description: Not authorized.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     delete:
@@ -851,6 +971,21 @@ paths:
           description: No app context exists with this contextId.
         "403":
           description: Not authorized.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/app-contexts/{contextId}/roles/{roleId}:
@@ -925,6 +1060,21 @@ paths:
           description: No role exists with this roleId in the given context.
         "403":
           description: Not authorized.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     delete:
@@ -953,6 +1103,21 @@ paths:
           description: No role exists with this roleId in the given context.
         "403":
           description: Not authorized.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/app-contexts/{contextId}/profiles/{principalId}/versions:
@@ -1238,6 +1403,21 @@ paths:
         "400":
           description: "The request body failed validation (for example, a missing\
             \ or malformed `externalId`)."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/clients/{id}:
@@ -1298,6 +1478,21 @@ paths:
                 $ref: "#/components/schemas/ClientResponse"
         "404":
           description: No client with the given ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     delete:
@@ -1318,6 +1513,21 @@ paths:
           description: The client was deleted. No response body is returned.
         "404":
           description: No client with the given ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/clients/lookup:
@@ -1350,6 +1560,21 @@ paths:
         "400":
           description: "The request body was missing or failed validation (for example,\
             \ a missing `type` or `field`, or more than one lookup mode supplied)."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/clients/{id}/versions:
@@ -1479,6 +1704,21 @@ paths:
         "400":
           description: "The request was invalid (for example, `text` is missing, or\
             \ the payload failed schema validation)."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/documents/{id}:
@@ -1547,6 +1787,21 @@ paths:
             \ was modified since the `expectedVersion` you supplied (optimistic concurrency).\
             \ Re-read the document and retry. Only returned when the request includes\
             \ `expectedVersion`."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     delete:
@@ -1568,6 +1823,21 @@ paths:
         "404":
           description: "No document with this ID exists in your account, or it is\
             \ outside your access scope."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     patch:
@@ -1615,6 +1885,21 @@ paths:
           description: "Version conflict (errorCode `VERSION_CONFLICT`): the document\
             \ was modified since the `expectedVersion` you supplied. Re-read the document\
             \ and retry. Only returned when the request includes `expectedVersion`."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/documents/lookup:
@@ -1740,6 +2025,21 @@ paths:
         "400":
           description: "The request was invalid (for example, a missing `type` or\
             \ `field`, or conflicting lookup modes)."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/documents/{id}/download:
@@ -1866,6 +2166,21 @@ paths:
         "400":
           description: "The request was invalid (for example, `fileName` or `fileType`\
             \ is missing)."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/erasure-requests:
@@ -1902,6 +2217,21 @@ paths:
             credentials cannot submit erasure requests.
         "501":
           description: This endpoint is not yet implemented.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/erasure-requests/{id}:
@@ -1974,6 +2304,21 @@ paths:
             credentials cannot submit export jobs.
         "501":
           description: This endpoint is not yet implemented.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/admin/export/{id}:
@@ -2112,6 +2457,21 @@ paths:
         "400":
           description: "The request was invalid — for example, the folder name was\
             \ missing or the supplied slug was malformed."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/folders/{id}:
@@ -2168,6 +2528,21 @@ paths:
                 $ref: "#/components/schemas/FolderResponse"
         "404":
           description: No folder with the given ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     delete:
@@ -2192,6 +2567,21 @@ paths:
             or is protected.
         "404":
           description: No folder with the given ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     patch:
@@ -2237,6 +2627,21 @@ paths:
           description: Version conflict — the folder was modified since the `expectedVersion`
             you supplied. Re-read the folder and retry. Returned only when the request
             includes `expectedVersion`.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/folders/{id}/versions:
@@ -2441,6 +2846,21 @@ paths:
         "400":
           description: The request was invalid — for example a missing required field
             or a malformed value.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/orgs/{id}:
@@ -2502,6 +2922,21 @@ paths:
                 $ref: "#/components/schemas/OrgResponse"
         "404":
           description: No organization with this ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     delete:
@@ -2522,6 +2957,21 @@ paths:
           description: The organization was deleted. No content is returned.
         "404":
           description: No organization with this ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/orgs/lookup:
@@ -2556,6 +3006,21 @@ paths:
         "400":
           description: "The lookup request was invalid — for example a missing `type`\
             \ or `field`, or more than one lookup mode supplied."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/orgs/{id}/versions:
@@ -2700,6 +3165,21 @@ paths:
             for this operation.
         "501":
           description: This endpoint is reserved but not yet implemented.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/records/lookup/batch:
@@ -2733,6 +3213,21 @@ paths:
             for this operation.
         "501":
           description: This endpoint is reserved but not yet implemented.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/records/batch:
@@ -2767,6 +3262,21 @@ paths:
             for this operation.
         "501":
           description: This endpoint is reserved but not yet implemented.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/records:
@@ -2922,6 +3432,21 @@ paths:
         "403":
           description: Your API key or token lacks the `records:c:<type>` scope required
             to create this record type.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/records/{id}:
@@ -3002,6 +3527,21 @@ paths:
             \ matches the `expectedVersion` you supplied, so it was modified since\
             \ you last read it (optimistic concurrency). Re-read the record and retry.\
             \ Only returned when the request includes `expectedVersion`."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     delete:
@@ -3027,6 +3567,21 @@ paths:
         "404":
           description: "No record with this ID exists in your account, or it is outside\
             \ your token's scope."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     patch:
@@ -3082,6 +3637,21 @@ paths:
           description: Version conflict — the record was modified since the `expectedVersion`
             you supplied. Re-read and retry. Only returned when the request includes
             `expectedVersion`.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/records/lookup:
@@ -3225,6 +3795,21 @@ paths:
           description: "The request is invalid — for example you supplied no lookup\
             \ mode or more than one, attempted a range or prefix lookup on a sensitive\
             \ field, or used a prefix lookup on a non-string field."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/records/{id}/tombstone:
@@ -3427,6 +4012,21 @@ paths:
                 updatedAt: 2024-01-15T09:30:00Z
         "400":
           description: The request body failed validation.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/schemas/{id}:
@@ -3491,6 +4091,21 @@ paths:
           description: The request body failed validation.
         "404":
           description: No schema with this id exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     delete:
@@ -3516,6 +4131,21 @@ paths:
           description: No schema with this id exists in your account.
         "409":
           description: The schema is still in use by existing records of its type.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/schemas/{id}/versions:
@@ -3587,6 +4217,21 @@ paths:
         "403":
           description: "Your token lacks the `search:r` scope, or the ownership filters\
             \ fall outside the scope it was granted."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/auth/token:
@@ -3634,6 +4279,21 @@ paths:
             \ organization, or client ID that does not exist in your account."
         "403":
           description: Only a root API key can mint scoped tokens.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/users:
@@ -3769,6 +4429,21 @@ paths:
         "400":
           description: "The request body failed validation (for example, `externalId`\
             \ is missing or the payload does not match the bound schema)."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/users/{id}:
@@ -3832,6 +4507,21 @@ paths:
                 $ref: "#/components/schemas/UserResponse"
         "404":
           description: No user with the given ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
     delete:
@@ -3855,6 +4545,21 @@ paths:
           description: The user was deleted. No content is returned.
         "404":
           description: No user with the given ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/users/lookup:
@@ -3888,6 +4593,21 @@ paths:
         "400":
           description: "The request body failed validation (for example, `type` or\
             \ `field` is missing, or more than one lookup mode was supplied)."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/users/{id}/versions:
@@ -3971,6 +4691,21 @@ paths:
             \ of this context already has it, or it is already associated with an\
             \ identity elsewhere in your account. Only the second case returns a structured\
             \ body with the `email_already_associated` error code."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/users/invite/resend:
@@ -4006,6 +4741,21 @@ paths:
           description: Your token lacks the `admin:users` scope.
         "404":
           description: No pending invitation matches the supplied email and app context.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/chat:
@@ -4047,7 +4797,11 @@ paths:
           description: You requested global (non-US) region serving (`allowGlobalRegion=true`)
             but your account has no signed global-processing waiver in effect.
         "429":
-          description: The burst rate limit was exceeded. Retry after a short delay.
+          description: "You have exceeded the per-minute rate limit for your plan.\
+            \ Read the `Retry-After` response header for the number of seconds to\
+            \ wait before retrying, and `X-RateLimit-Limit` / `X-RateLimit-Remaining`\
+            \ for your limit. See the rate limits guide for the per-plan limits and\
+            \ recommended backoff."
       security:
         - BearerAuth: []
   /v1/documents/{id}/ask:
@@ -4098,7 +4852,11 @@ paths:
           description: The document exceeds the 32K-token cap. Use `POST /v1/rag`
             instead.
         "429":
-          description: The burst rate limit was exceeded. Retry after a short delay.
+          description: "You have exceeded the per-minute rate limit for your plan.\
+            \ Read the `Retry-After` response header for the number of seconds to\
+            \ wait before retrying, and `X-RateLimit-Limit` / `X-RateLimit-Remaining`\
+            \ for your limit. See the rate limits guide for the per-plan limits and\
+            \ recommended backoff."
       security:
         - BearerAuth: []
   /v1/rag:
@@ -4142,7 +4900,11 @@ paths:
           description: You requested global (non-US) region serving (`allowGlobalRegion=true`)
             but your account has no signed global-processing waiver in effect.
         "429":
-          description: The burst rate limit was exceeded. Retry after a short delay.
+          description: "You have exceeded the per-minute rate limit for your plan.\
+            \ Read the `Retry-After` response header for the number of seconds to\
+            \ wait before retrying, and `X-RateLimit-Limit` / `X-RateLimit-Remaining`\
+            \ for your limit. See the rate limits guide for the per-plan limits and\
+            \ recommended backoff."
         "500":
           description: The search infrastructure encountered an error and the query
             could not be completed.
@@ -5149,6 +5911,27 @@ components:
           description: storageEstimate in milli-credit precision (exact)
           format: int64
           example: 4700000
+        reads:
+          type: integer
+          description: Credits consumed by read-call overage
+          format: int64
+          example: 0
+        readsMilli:
+          type: integer
+          description: reads in milli-credit precision (exact)
+          format: int64
+          example: 0
+        dataOut:
+          type: integer
+          description: Credits consumed by data-out (egress) overage — includes document
+            downloads
+          format: int64
+          example: 0
+        dataOutMilli:
+          type: integer
+          description: dataOut in milli-credit precision (exact)
+          format: int64
+          example: 0
       description: Per-category credit decomposition for the period. Each category
         has both a rounded value (for display) and a *Milli value (for exact math).
     Credits:
@@ -5185,6 +5968,39 @@ components:
         breakdown:
           $ref: "#/components/schemas/CreditBreakdown"
       description: Aggregate credit usage for your account this period
+    DataOut:
+      type: object
+      properties:
+        bytes:
+          type: integer
+          description: Total response bytes egressed this period (reads + payload
+            GETs + search + downloads)
+          format: int64
+          example: 32500000000
+        freeBytes:
+          type: integer
+          description: Included free data-out bytes for your plan this period. Null
+            means unlimited.
+          format: int64
+          nullable: true
+          example: 53687091200
+        overageBytes:
+          type: integer
+          description: Bytes beyond the free allowance (billed at the data-out rate)
+          format: int64
+          example: 0
+        overageCredits:
+          type: integer
+          description: Credits charged for data-out overage (rounded down)
+          format: int64
+          example: 0
+        overageCreditsMilli:
+          type: integer
+          description: overageCredits in milli-credit precision (exact)
+          format: int64
+          example: 0
+      description: Unified data-out (egress) metering — response bytes across all
+        surfaces
     DocumentIngest:
       type: object
       properties:
@@ -5220,19 +6036,21 @@ components:
       properties:
         bytes:
           type: integer
-          description: Total bytes egressed via download URLs this period
+          description: Total bytes egressed via download URLs this period (also counted
+            toward `reads.dataOut.bytes`)
           format: int64
           example: 104857600
         credits:
           type: integer
-          description: Credits charged for download egress (rounded up to whole GB)
+          description: "Always 0 — document downloads are billed on the unified data-out\
+            \ line (`reads.dataOut`), not as a separate per-download charge."
           format: int64
-          example: 1
-      description: "Pre-signed download URL usage. Note: downloads are billed at GB\
-        \ granularity (ceiling), so per-environment `credits` values can sum to more\
-        \ than the account-level `credits` when each environment has a sub-GB remainder.\
-        \ The `bytes` field is exact — use `ceil((live.bytes + test.bytes) / 1e9)\
-        \ * DOWNLOAD_CREDITS_PER_GB` for precise math."
+          example: 0
+      description: "Pre-signed download URL usage. Document-download egress is metered\
+        \ as part of the unified data-out line: it draws your plan's included data-out\
+        \ allowance and is billed at the data-out rate above it — see `reads.dataOut`.\
+        \ This section is the document-download byte detail; its `credits` is always\
+        \ 0 (the charge appears on the data-out line, not here)."
     IdentitySection:
       type: object
       properties:
@@ -5361,6 +6179,48 @@ components:
       description: "PHI read-access logging metering. Two lines, because read-access\
         \ bills BOTH the retained storage AND the per-read write (unlike audit history's\
         \ storage-only line — an audited write is already billed; a read is not)."
+    ReadCalls:
+      type: object
+      properties:
+        used:
+          type: integer
+          description: Read (GET) calls this period
+          format: int64
+          example: 425000
+        freeAllowance:
+          type: integer
+          description: Included free read calls for your plan this period. Null means
+            unlimited.
+          format: int64
+          nullable: true
+          example: 1000000
+        overage:
+          type: integer
+          description: Calls beyond the free allowance (billed)
+          format: int64
+          example: 0
+        overageCredits:
+          type: integer
+          description: Credits charged for overage calls (rounded down)
+          format: int64
+          example: 0
+        overageCreditsMilli:
+          type: integer
+          description: overageCredits in milli-credit precision (exact)
+          format: int64
+          example: 0
+      description: Per-call read metering
+    ReadsSection:
+      type: object
+      properties:
+        calls:
+          $ref: "#/components/schemas/ReadCalls"
+        dataOut:
+          $ref: "#/components/schemas/DataOut"
+      description: "Read metering: a per-call axis (GET request infrastructure) and\
+        \ a unified data-out (egress) axis. data-out covers ALL response egress —\
+        \ reads, payload-bearing GETs, search results, and document downloads (the\
+        \ documents.downloads line is the document-only slice of this)."
     RecordWrites:
       type: object
       properties:
@@ -5523,6 +6383,8 @@ components:
           $ref: "#/components/schemas/IdentitySection"
         inference:
           $ref: "#/components/schemas/InferenceSection"
+        reads:
+          $ref: "#/components/schemas/ReadsSection"
         tenants:
           $ref: "#/components/schemas/Tenants"
         contexts:
@@ -8346,10 +9208,14 @@ components:
           example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         typeName:
           type: string
-          description: "Restrict results to records of a specific schema type (for\
-            \ example `patient` or `intake_form`). Has no effect on documents — it\
-            \ only narrows record results. Setting it implicitly limits the results\
-            \ to records, unless you also include documents via `contentTypes`."
+          description: "Restrict results to content of a specific schema type — for\
+            \ example `patient`, `intake_form`, or `runbook`. Applies to both documents\
+            \ and records: any item whose bound schema type matches is kept. On its\
+            \ own it narrows both documents and records to that type; combine it with\
+            \ `contentTypes` to narrow within a single content type — for example\
+            \ `contentTypes: [\"documents\"]` with `typeName: \"runbook\"` searches\
+            \ only runbook documents. Untyped content (ingested without a schema)\
+            \ never matches a `typeName` filter."
           example: patient
         createdAfter:
           type: string
@@ -9293,10 +10159,12 @@ components:
           example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         typeName:
           type: string
-          description: "Restrict retrieval to records of a specific schema type. Applies\
-            \ only to records: setting it implicitly limits results to records unless\
-            \ `contentTypes` also includes `documents`, in which case documents are\
-            \ still returned unfiltered."
+          description: "Restrict retrieval to content of a specific schema type —\
+            \ for example `patient` or `runbook`. Applies to both documents and records:\
+            \ any item whose bound schema type matches is kept. On its own it narrows\
+            \ both content types to that type; combine it with `contentTypes` to narrow\
+            \ within a single content type. Untyped content (ingested without a schema)\
+            \ never matches."
           example: patient
         createdAfter:
           type: string
