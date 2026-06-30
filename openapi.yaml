@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users, organizations, and clients.
-  version: "0.30.0"
+  version: "0.31.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -459,14 +459,29 @@ paths:
       description: "Creates a new access profile under the given app context. This\
         \ call is idempotent by `principalId`: if a profile with the same `principalId`\
         \ already exists, the existing profile is returned (with status 200) instead\
-        \ of creating a duplicate. You must provide exactly one of `scopes` (an inline\
-        \ list of scopes) or `roleId` (a reference to a role); supplying both, or\
-        \ neither, is rejected. `identityOverrides` may set only `orgId` and `clientId`;\
-        \ any other key (including the account identifier or `userId`) is rejected.\
-        \ If you use a scoped credential, the profile's effective scopes may not exceed\
-        \ your own; a root API key (`sk_`) is exempt. Requires the `profiles:c` scope."
+        \ of creating a duplicate. The response's `created` field (and the HTTP status\
+        \ — 201 when created, 200 when an existing profile was returned) tells the\
+        \ two apart. To overwrite an existing profile's `scopes`/`roleId`, `identityOverrides`,\
+        \ and `status` instead of returning it unchanged, set `?upsert=true` (this\
+        \ also requires the `profiles:u` scope). You must provide exactly one of `scopes`\
+        \ (an inline list of scopes) or `roleId` (a reference to a role); supplying\
+        \ both, or neither, is rejected. `identityOverrides` may set only `orgId`\
+        \ and `clientId`; any other key (including the account identifier or `userId`)\
+        \ is rejected. If you use a scoped credential, the profile's effective scopes\
+        \ may not exceed your own; a root API key (`sk_`) is exempt. Requires the\
+        \ `profiles:c` scope."
       operationId: createAccessProfile
       parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if a profile with the same `principalId` already\
+          \ exists its grant source (`scopes` or `roleId`), `identityOverrides`, and\
+          \ `status` are updated to the submitted values instead of being returned\
+          \ unchanged. Defaults to `false`. Requires the `profiles:u` scope in addition\
+          \ to `profiles:c`."
+        schema:
+          type: boolean
+          default: false
       - name: contextId
         in: path
         required: true
@@ -562,10 +577,24 @@ paths:
       description: "Creates a new app context. This call is idempotent by `contextId`:\
         \ if an app context with the same `contextId` already exists, the existing\
         \ app context is returned (with status 200) instead of creating a duplicate.\
-        \ The reserved `contextId` value `vectros-admin` cannot be created through\
-        \ this endpoint; it is provisioned automatically for your account. Requires\
-        \ the `app-contexts:c` scope."
+        \ The response's `created` field (and the HTTP status — 201 when created,\
+        \ 200 when an existing context was returned) tells the two apart. To overwrite\
+        \ an existing context's `name`/`description` instead of returning it unchanged,\
+        \ set `?upsert=true` (this also requires the `app-contexts:u` scope). The\
+        \ reserved `contextId` value `vectros-admin` cannot be created through this\
+        \ endpoint; it is provisioned automatically for your account. Requires the\
+        \ `app-contexts:c` scope."
       operationId: createAppContext
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if an app context with the same `contextId` already\
+          \ exists its `name` and `description` are updated to the submitted values\
+          \ instead of being returned unchanged. Defaults to `false`. Requires the\
+          \ `app-contexts:u` scope in addition to `app-contexts:c`."
+        schema:
+          type: boolean
+          default: false
       requestBody:
         content:
           application/json:
@@ -662,11 +691,24 @@ paths:
       summary: Create a role
       description: "Creates a new role under the given app context. This call is idempotent\
         \ by `roleId`: if a role with the same `roleId` already exists, the existing\
-        \ role is returned (with status 200) instead of creating a duplicate. If you\
-        \ use a scoped credential, the role's scopes may not exceed your own; a root\
-        \ API key (`sk_`) is exempt. Requires the `profiles:c` scope."
+        \ role is returned (with status 200) instead of creating a duplicate. The\
+        \ response's `created` field (and the HTTP status — 201 when created, 200\
+        \ when an existing role was returned) tells the two apart. To overwrite an\
+        \ existing role's `name`/`description`/`scopes` instead of returning it unchanged,\
+        \ set `?upsert=true` (this also requires the `profiles:u` scope). If you use\
+        \ a scoped credential, the role's scopes may not exceed your own; a root API\
+        \ key (`sk_`) is exempt. Requires the `profiles:c` scope."
       operationId: createRole
       parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if a role with the same `roleId` already exists\
+          \ its `name`, `description`, and `scopes` are updated to the submitted values\
+          \ instead of being returned unchanged. Defaults to `false`. Requires the\
+          \ `profiles:u` scope in addition to `profiles:c`."
+        schema:
+          type: boolean
+          default: false
       - name: contextId
         in: path
         required: true
@@ -1383,9 +1425,24 @@ paths:
       summary: Create or retrieve a client (idempotent by externalId)
       description: "Creates a new client identity in your account. This call is idempotent\
         \ on `externalId`: if a client with the same `externalId` already exists,\
-        \ the existing record is returned instead of creating a duplicate. Requires\
-        \ the `clients:c` scope."
+        \ the existing record is returned instead of creating a duplicate. The response's\
+        \ `created` field (and the HTTP status — 201 when created, 200 when an existing\
+        \ client was returned) tells the two apart. To overwrite an existing client's\
+        \ content instead of returning it unchanged, set `?upsert=true` (this also\
+        \ requires the `clients:u` scope). Requires the `clients:c` scope."
       operationId: createClient
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if a client with the same `externalId` already\
+          \ exists its mutable fields are overwritten (the submitted `name`/`status`/`payload`/`orgId`/`schemaId`\
+          \ are applied) instead of being returned unchanged; the immutable `externalId`\
+          \ and ownership are never changed. A re-applied upsert whose content matches\
+          \ is a no-op. Defaults to `false`. Requires the `clients:u` scope in addition\
+          \ to `clients:c`."
+        schema:
+          type: boolean
+          default: false
       requestBody:
         content:
           application/json:
@@ -1394,8 +1451,15 @@ paths:
         required: true
       responses:
         "201":
-          description: "The client was created, or the existing client with the same\
-            \ `externalId` was returned."
+          description: "A new client was created (`created: true`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientResponse"
+        "200":
+          description: "A client with the same `externalId` already existed and was\
+            \ returned (`created: false`) — unchanged for an idempotent create, or\
+            \ updated when `?upsert=true`."
           content:
             application/json:
               schema:
@@ -1403,6 +1467,10 @@ paths:
         "400":
           description: "The request body failed validation (for example, a missing\
             \ or malformed `externalId`)."
+        "403":
+          description: "Your API key or token lacks the `clients:c` scope required\
+            \ to create a client (or, with `?upsert=true`, the `clients:u` scope required\
+            \ to overwrite it)."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -1685,9 +1753,28 @@ paths:
       tags:
       - Documents
       summary: Ingest a text document
-      description: Creates a document from a raw text string and queues it for asynchronous
-        indexing so it becomes searchable. Requires the `documents:c` scope.
+      description: "Creates a document from a raw text string and queues it for asynchronous\
+        \ indexing so it becomes searchable. Optionally supply an `externalId` to\
+        \ make the create idempotent — if a document with the same `externalId` already\
+        \ exists in your context, that existing document is returned unchanged instead\
+        \ of a duplicate being created. The response's `created` field (and the HTTP\
+        \ status — 201 when created, 200 when an existing document was returned) tells\
+        \ the two apart. To overwrite an existing document's content instead of returning\
+        \ it unchanged, set `?upsert=true` (this also requires the `documents:u` scope).\
+        \ Requires the `documents:c` scope."
       operationId: ingestDocument
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if a document with the same `externalId` already\
+          \ exists its content is overwritten (the submitted `payload`, `title`, and\
+          \ — when supplied — `text` are applied and the version is bumped) instead\
+          \ of being returned unchanged; the immutable `externalId`, `schemaId`, `indexMode`,\
+          \ and ownership are never changed. Defaults to `false`. Requires the `documents:u`\
+          \ scope in addition to `documents:c`."
+        schema:
+          type: boolean
+          default: false
       requestBody:
         content:
           application/json:
@@ -1696,7 +1783,15 @@ paths:
         required: true
       responses:
         "201":
-          description: Document created and queued for indexing.
+          description: "Document created and queued for indexing (`created: true`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "200":
+          description: "A document with the same `externalId` already existed and\
+            \ was returned (`created: false`) — unchanged for an idempotent create,\
+            \ or updated when `?upsert=true`."
           content:
             application/json:
               schema:
@@ -1704,6 +1799,10 @@ paths:
         "400":
           description: "The request was invalid (for example, `text` is missing, or\
             \ the payload failed schema validation)."
+        "403":
+          description: "Your API key or token lacks the `documents:c` scope required\
+            \ to create a document (or, with `?upsert=true`, the `documents:u` scope\
+            \ required to overwrite one)."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -1908,11 +2007,12 @@ paths:
       tags:
       - Documents
       summary: Look up documents by field value
-      description: "Finds documents of a given type by a schema-declared lookup field.\
-        \ The document must be bound to a schema (via `schemaId`) that declares the\
-        \ field as a lookup field. A lookup on a sensitive field is rejected here,\
-        \ because the value would appear in the URL query string; use POST /v1/documents/lookup\
-        \ (the request-body variant) for a sensitive field instead. Results are paginated:\
+      description: "Finds documents of a given type by field value. Supported fields:\
+        \ `externalId` (the document's first-class external identifier — no schema\
+        \ declaration required) and any field declared as a lookup field on the bound\
+        \ schema. A lookup on a sensitive field is rejected here because the value\
+        \ would appear in the URL query string; use POST /v1/documents/lookup (the\
+        \ request-body variant) for a sensitive field instead. Results are paginated:\
         \ set `limit` for the page size and feed the returned `nextCursor` back as\
         \ `startFrom` to fetch the next page. The response is a `{data, nextCursor}`\
         \ envelope. Requires the `documents:r` scope."
@@ -1927,7 +2027,9 @@ paths:
         example: invoice
       - name: field
         in: query
-        description: The name of the lookup field declared on the schema.
+        description: "The field to look up by. Use `externalId` to look up by the\
+          \ document's external identifier, or the name of any lookup field declared\
+          \ on the bound schema."
         required: true
         schema:
           type: string
@@ -2145,11 +2247,31 @@ paths:
       tags:
       - Documents
       summary: Initiate a file upload
-      description: Starts a file-based document by returning a short-lived presigned
-        S3 PUT URL. Upload the file bytes directly to `uploadUrl`; the document is
-        then automatically queued for text extraction and asynchronous indexing. Requires
-        the `documents:c` scope.
+      description: "Starts a file-based document by returning a short-lived presigned\
+        \ S3 PUT URL. Upload the file bytes directly to `uploadUrl`; the document\
+        \ is then automatically queued for text extraction and asynchronous indexing.\
+        \ Supplying an `externalId` makes this idempotent — re-initiating an upload\
+        \ with the same `externalId` re-issues a fresh presigned URL to the SAME existing\
+        \ document/object (so a re-upload inherently replaces the file body) rather\
+        \ than creating a duplicate. The response's `created` field (and the HTTP\
+        \ status — 201 when a new document was minted, 200 when an existing one was\
+        \ matched) tells the two apart. With `?upsert=true`, the submitted `payload`/`title`\
+        \ are also applied to the matched document (file-body divergence cannot be\
+        \ diffed at upload-init — the bytes have not arrived yet — so the re-upload\
+        \ itself replaces the body; `?upsert=true` requires the `documents:u` scope).\
+        \ Requires the `documents:c` scope."
       operationId: uploadDocument
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true` and a document with the same `externalId` already\
+          \ exists, apply the submitted `payload`/`title` to that existing document\
+          \ (a metadata upsert) before re-issuing the presigned URL. The file body\
+          \ is replaced inherently by the re-upload; it cannot be diffed at upload-init.\
+          \ Defaults to `false`. Requires the `documents:u` scope in addition to `documents:c`."
+        schema:
+          type: boolean
+          default: false
       requestBody:
         content:
           application/json:
@@ -2158,7 +2280,16 @@ paths:
         required: true
       responses:
         "201":
-          description: A presigned upload URL was generated.
+          description: "A new document was created and a presigned upload URL generated\
+            \ (`created: true`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileUploadResponse"
+        "200":
+          description: "A document with the same `externalId` already existed (`created:\
+            \ false`); a fresh presigned URL to its existing object was re-issued\
+            \ (idempotent upload)."
           content:
             application/json:
               schema:
@@ -2166,6 +2297,9 @@ paths:
         "400":
           description: "The request was invalid (for example, `fileName` or `fileType`\
             \ is missing)."
+        "403":
+          description: "Your API key or token lacks the `documents:c` scope (or, with\
+            \ `?upsert=true`, the `documents:u` scope)."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -2438,8 +2572,27 @@ paths:
       summary: Create a folder
       description: "Creates a folder to organize your documents and records. If `parentFolderId`\
         \ is omitted, the folder is created under your context's default root folder.\
-        \ Requires the `folders:c` scope."
+        \ Folder creation is idempotent by (slug + parent): if a folder with the same\
+        \ slug already exists under the same parent, that existing folder is returned\
+        \ unchanged instead of a duplicate being created. The response's `created`\
+        \ field (and the HTTP status — 201 when created, 200 when an existing folder\
+        \ was returned) tells the two apart. To overwrite an existing folder's mutable\
+        \ fields instead of returning it unchanged, set `?upsert=true` (this also\
+        \ requires the `folders:u` scope). Requires the `folders:c` scope."
       operationId: createFolder
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if a folder with the same slug already exists under\
+          \ the same parent its mutable fields (`name`, `description`, and ownership)\
+          \ are overwritten from the request and the version is bumped, instead of\
+          \ the existing folder being returned unchanged; the immutable slug and parent\
+          \ are never changed. A re-applied upsert whose content matches is a no-op\
+          \ (no version bump). Defaults to `false`. Requires the `folders:u` scope\
+          \ in addition to `folders:c`."
+        schema:
+          type: boolean
+          default: false
       requestBody:
         content:
           application/json:
@@ -2448,8 +2601,15 @@ paths:
         required: true
       responses:
         "201":
-          description: "The folder was created (or, if a folder with the same slug\
-            \ already exists under the same parent, that existing folder is returned)."
+          description: "A new folder was created (`created: true`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FolderResponse"
+        "200":
+          description: "A folder with the same slug already existed under the same\
+            \ parent and was returned (`created: false`) — unchanged for an idempotent\
+            \ create, or with the request's mutable fields applied when `?upsert=true`."
           content:
             application/json:
               schema:
@@ -2457,6 +2617,10 @@ paths:
         "400":
           description: "The request was invalid — for example, the folder name was\
             \ missing or the supplied slug was malformed."
+        "403":
+          description: "Your API key or token lacks the `folders:c` scope required\
+            \ to create a folder (or, with `?upsert=true`, the `folders:u` scope required\
+            \ to overwrite it)."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -2826,9 +2990,24 @@ paths:
       summary: Create an organization (idempotent by external ID)
       description: "Creates a new organization in your account. This call is idempotent\
         \ on `externalId`: if an organization with the same `externalId` already exists,\
-        \ the existing record is returned instead of creating a duplicate. Requires\
-        \ the `orgs:c` scope."
+        \ the existing record is returned instead of creating a duplicate. The response's\
+        \ `created` field (and the HTTP status — 201 when created, 200 when an existing\
+        \ organization was returned) tells the two apart. To overwrite an existing\
+        \ organization's content instead of returning it unchanged, set `?upsert=true`\
+        \ (this also requires the `orgs:u` scope). Requires the `orgs:c` scope."
       operationId: createOrg
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if an organization with the same `externalId` already\
+          \ exists its mutable fields are overwritten (the submitted `name`/`status`/`payload`/`schemaId`\
+          \ are applied) instead of being returned unchanged; the immutable `externalId`\
+          \ and ownership are never changed. A re-applied upsert whose content matches\
+          \ is a no-op. Defaults to `false`. Requires the `orgs:u` scope in addition\
+          \ to `orgs:c`."
+        schema:
+          type: boolean
+          default: false
       requestBody:
         content:
           application/json:
@@ -2837,8 +3016,15 @@ paths:
         required: true
       responses:
         "201":
-          description: "The organization that was created, or the existing organization\
-            \ if one already matched the supplied `externalId`."
+          description: "A new organization was created (`created: true`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgResponse"
+        "200":
+          description: "An organization with the same `externalId` already existed\
+            \ and was returned (`created: false`) — unchanged for an idempotent create,\
+            \ or updated when `?upsert=true`."
           content:
             application/json:
               schema:
@@ -2846,6 +3032,10 @@ paths:
         "400":
           description: The request was invalid — for example a missing required field
             or a malformed value.
+        "403":
+          description: "Your API key or token lacks the `orgs:c` scope required to\
+            \ create an organization (or, with `?upsert=true`, the `orgs:u` scope\
+            \ required to overwrite it)."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -3392,8 +3582,25 @@ paths:
         \ only `schemaId`, the type is taken from that schema. Optionally supply an\
         \ `externalId` to make the create idempotent — if a record with the same `externalId`\
         \ already exists in your context, that existing record is returned unchanged\
-        \ instead of a duplicate being created. Requires the `records:c:<type>` scope."
+        \ instead of a duplicate being created. The response's `created` field (and\
+        \ the HTTP status — 201 when created, 200 when an existing record was returned)\
+        \ tells the two apart. To overwrite an existing record's content instead of\
+        \ returning it unchanged, set `?upsert=true` (this also requires the `records:u:<type>`\
+        \ scope). Requires the `records:c:<type>` scope."
       operationId: createRecord
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if a record with the same `externalId` already\
+          \ exists its content is overwritten (the submitted `payload` and mutable\
+          \ fields are applied and the version is bumped) instead of being returned\
+          \ unchanged; the immutable `externalId`, `schemaId`/`typeName`, and ownership\
+          \ are never changed. A re-applied upsert whose content matches is a no-op\
+          \ (no version bump). Defaults to `false`. Requires the `records:u:<type>`\
+          \ scope in addition to `records:c:<type>`."
+        schema:
+          type: boolean
+          default: false
       requestBody:
         content:
           application/json:
@@ -3409,12 +3616,13 @@ paths:
         required: true
       responses:
         "201":
-          description: Record created
+          description: A new record was created.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/RecordResponse"
               example:
+                created: true
                 id: 550e8400-e29b-41d4-a716-446655440000
                 typeName: intake_form
                 schemaId: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
@@ -3425,13 +3633,22 @@ paths:
                 createdBy: 550e8400-e29b-41d4-a716-446655440000
                 createdAt: 2024-01-15T09:30:00Z
                 updatedAt: 2024-01-15T09:30:00Z
+        "200":
+          description: "A record with the same `externalId` already existed and was\
+            \ returned (`created: false`) — unchanged for an idempotent create, or\
+            \ updated when `?upsert=true`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordResponse"
         "400":
           description: "The request is invalid — for example the payload fails schema\
             \ validation, the named type has no schema, or `typeName` and `schemaId`\
             \ disagree."
         "403":
-          description: Your API key or token lacks the `records:c:<type>` scope required
-            to create this record type.
+          description: "Your API key or token lacks the `records:c:<type>` scope required\
+            \ to create this record type (or, with `?upsert=true`, the `records:u:<type>`\
+            \ scope required to overwrite it)."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -3970,8 +4187,26 @@ paths:
       description: "Defines a new record type with optional field definitions, validation\
         \ rules, and lookup indexes. Idempotent by `typeName` within the same ownership\
         \ scope: re-creating an existing `typeName` returns the existing schema rather\
-        \ than failing. Requires the `schemas:w` scope."
+        \ than failing. The response's `created` field (and the HTTP status — 201\
+        \ when created, 200 when an existing schema was returned) tells the two apart.\
+        \ To reconcile an existing schema to the submitted shape instead of returning\
+        \ it unchanged, set `?upsert=true` (this also requires the `schemas:w` scope;\
+        \ only legal schema changes are applied — migration-locked changes are rejected).\
+        \ Requires the `schemas:w` scope."
       operationId: createSchema
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if a schema with the same `typeName` already exists\
+          \ it is reconciled to the submitted shape (additive fields, lookups, renderHints,\
+          \ and `active` are applied) instead of being returned unchanged; `typeName`\
+          \ and migration-locked lookup attributes (`rangeEnabled`/`sortBy`/`sensitive`)\
+          \ cannot be changed and a request to do so is rejected. A re-applied upsert\
+          \ whose declared shape is unchanged is a no-op (no schema-version bump).\
+          \ Defaults to `false`. Requires the `schemas:w` scope."
+        schema:
+          type: boolean
+          default: false
       requestBody:
         content:
           application/json:
@@ -3997,21 +4232,33 @@ paths:
         required: true
       responses:
         "201":
-          description: "Schema created, or the existing schema returned when one with\
-            \ the same typeName already exists (idempotent)."
+          description: "A new schema was created (`created: true`)."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SchemaResponse"
               example:
+                created: true
                 id: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
                 typeName: intake_form
                 displayName: Client Intake Form
                 active: true
                 createdAt: 2024-01-15T09:30:00Z
                 updatedAt: 2024-01-15T09:30:00Z
+        "200":
+          description: "A schema with the same `typeName` already existed and was\
+            \ returned (`created: false`) — unchanged for an idempotent create, or\
+            \ reconciled when `?upsert=true`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchemaResponse"
         "400":
-          description: The request body failed validation.
+          description: "The request body failed validation, or (with `?upsert=true`)\
+            \ the reconcile attempted a migration-locked change."
+        "403":
+          description: Your API key or token lacks the `schemas:w` scope required
+            to create or reconcile this schema.
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -4409,9 +4656,24 @@ paths:
       summary: Create or retrieve a user (idempotent by externalId)
       description: "Creates a user identity in your account. The operation is idempotent\
         \ on `externalId`: if a user with the same `externalId` already exists, the\
-        \ existing record is returned instead of creating a duplicate. Requires the\
-        \ `users:c` scope."
+        \ existing record is returned instead of creating a duplicate. The response's\
+        \ `created` field (and the HTTP status — 201 when created, 200 when an existing\
+        \ user was returned) tells the two apart. To overwrite an existing user's\
+        \ mutable fields (email, status, payload, schema binding) instead of returning\
+        \ it unchanged, set `?upsert=true` (this also requires the `users:u` scope).\
+        \ Requires the `users:c` scope."
       operationId: createUser
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if a user with the same `externalId` already exists\
+          \ its mutable fields (email, status, payload, schemaId) are updated to the\
+          \ submitted values instead of being returned unchanged; the immutable `externalId`\
+          \ and `type` are never changed. Defaults to `false`. Requires the `users:u`\
+          \ scope in addition to `users:c`."
+        schema:
+          type: boolean
+          default: false
       requestBody:
         content:
           application/json:
@@ -4420,8 +4682,15 @@ paths:
         required: true
       responses:
         "201":
-          description: "The user was created, or an existing user with the same `externalId`\
-            \ was returned."
+          description: "A new user was created (`created: true`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "200":
+          description: "A user with the same `externalId` already existed and was\
+            \ returned (`created: false`) — unchanged for an idempotent create, or\
+            \ updated when `?upsert=true`."
           content:
             application/json:
               schema:
@@ -4429,6 +4698,10 @@ paths:
         "400":
           description: "The request body failed validation (for example, `externalId`\
             \ is missing or the payload does not match the bound schema)."
+        "403":
+          description: "Your API key or token lacks the `users:c` scope required to\
+            \ create a user (or, with `?upsert=true`, the `users:u` scope required\
+            \ to overwrite it)."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5352,6 +5625,15 @@ components:
     AccessProfileResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new access profile. True when\
+            \ a new profile was created; false when a profile with the same `principalId`\
+            \ already existed and was returned unchanged (idempotent create) or updated\
+            \ (when `?upsert=true`). Present only on the create response (POST /v1/app-contexts/{contextId}/profiles);\
+            \ absent on reads. The HTTP status mirrors it — 201 when created, 200\
+            \ when an existing profile was returned."
+          example: true
         id:
           type: string
           description: Opaque identifier for this profile. Also serves as the pagination
@@ -5494,6 +5776,15 @@ components:
     AppContextResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new app context. True when a new\
+            \ app context was created; false when an app context with the same `contextId`\
+            \ already existed and was returned unchanged (idempotent create) or updated\
+            \ (when `?upsert=true`). Present only on the create response (POST /v1/app-contexts);\
+            \ absent on reads. The HTTP status mirrors it — 201 when created, 200\
+            \ when an existing app context was returned."
+          example: true
         id:
           type: string
           description: "Opaque composite identifier for this app context. Use it as\
@@ -5562,6 +5853,15 @@ components:
     RoleResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new role. True when a new role\
+            \ was created; false when a role with the same `roleId` already existed\
+            \ and was returned unchanged (idempotent create) or updated (when `?upsert=true`).\
+            \ Present only on the create response (POST /v1/app-contexts/{contextId}/roles);\
+            \ absent on reads. The HTTP status mirrors it — 201 when created, 200\
+            \ when an existing role was returned."
+          example: true
         id:
           type: string
           description: "The role's globally unique identifier, composed from your\
@@ -6434,6 +6734,15 @@ components:
     ClientResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new client. True when a new client\
+            \ was created; false when a client with the same `externalId` already\
+            \ existed and was returned unchanged (idempotent create) or updated (when\
+            \ `?upsert=true`). Present only on the create response (POST /v1/clients);\
+            \ absent on reads. The HTTP status mirrors it — 201 when created, 200\
+            \ when an existing client was returned."
+          example: true
         id:
           type: string
           description: "The Vectros-assigned UUID for this client. Use this ID when\
@@ -6621,6 +6930,15 @@ components:
     DocumentResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new document. True when a new\
+            \ document was created; false when a document with the same `externalId`\
+            \ already existed and was returned unchanged (idempotent create) or updated\
+            \ (when `?upsert=true`). Present only on the create response (POST /v1/documents);\
+            \ absent on reads. The HTTP status mirrors it — 201 when created, 200\
+            \ when an existing document was returned."
+          example: true
         id:
           type: string
           description: The Vectros-assigned unique ID of the document.
@@ -6890,7 +7208,9 @@ components:
           example: invoice
         field:
           type: string
-          description: "Name of a lookup field declared on the schema. For a sensitive\
+          description: "The field to look up by. Use `externalId` to look up by the\
+            \ document's external identifier (no schema declaration required), or\
+            \ the name of any lookup field declared on the bound schema. For a sensitive\
             \ field, this body variant is required (the GET variant rejects sensitive-field\
             \ lookups)."
           example: mrn
@@ -6997,6 +7317,15 @@ components:
     FileUploadResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new document. True when a new\
+            \ document was created; false when a document with the same `externalId`\
+            \ already existed and a fresh upload URL to its existing object was re-issued\
+            \ (idempotent upload). Present only on the upload response (POST /v1/documents/upload).\
+            \ The HTTP status mirrors it — 201 when created, 200 when an existing\
+            \ document was returned."
+          example: true
         id:
           type: string
           description: "Document ID assigned to this upload. Poll `GET /v1/documents/{id}`\
@@ -7476,6 +7805,13 @@ components:
     FolderResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Present only on a create response: `true` when a new folder\
+            \ was created (HTTP 201), `false` when a folder with the same slug already\
+            \ existed under the same parent and was returned instead (HTTP 200). Omitted\
+            \ on reads, lists, and updates."
+          example: true
         id:
           type: string
           description: "Unique identifier for the folder, assigned by Vectros."
@@ -7744,6 +8080,15 @@ components:
     OrgResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new organization. True when a\
+            \ new organization was created; false when an organization with the same\
+            \ `externalId` already existed and was returned unchanged (idempotent\
+            \ create) or updated (when `?upsert=true`). Present only on the create\
+            \ response (POST /v1/orgs); absent on reads. The HTTP status mirrors it\
+            \ — 201 when created, 200 when an existing organization was returned."
+          example: true
         id:
           type: string
           description: The Vectros-assigned ID (UUID) for this organization. Use it
@@ -7958,6 +8303,15 @@ components:
     RecordResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new record. True when a new record\
+            \ was created; false when a record with the same `externalId` already\
+            \ existed and was returned unchanged (idempotent create) or updated (when\
+            \ `?upsert=true`). Present only on the create response (POST /v1/records);\
+            \ absent on reads. The HTTP status mirrors it — 201 when created, 200\
+            \ when an existing record was returned."
+          example: true
         id:
           type: string
           description: "Unique identifier for this record (UUID), assigned by Vectros\
@@ -8647,6 +9001,15 @@ components:
     SchemaResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new schema. True when a new schema\
+            \ was created; false when a schema with the same `typeName` already existed\
+            \ and was returned unchanged (idempotent create) or reconciled to the\
+            \ submitted shape (when `?upsert=true`). Present only on the create response\
+            \ (POST /v1/schemas); absent on reads. The HTTP status mirrors it — 201\
+            \ when created, 200 when an existing schema was returned."
+          example: true
         id:
           type: string
           description: Unique identifier for this schema.
@@ -9372,6 +9735,15 @@ components:
     UserResponse:
       type: object
       properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new user. True when a new user\
+            \ was created; false when a user with the same `externalId` already existed\
+            \ and was returned unchanged (idempotent create) or updated (when `?upsert=true`).\
+            \ Present only on the create response (POST /v1/users); absent on reads.\
+            \ The HTTP status mirrors it — 201 when created, 200 when an existing\
+            \ user was returned."
+          example: true
         id:
           type: string
           description: "The Vectros-assigned UUID for this user. Use this ID when\

@@ -3,8 +3,10 @@
 Vectros is the secure data, document, search, and AI back-end that developers
 build apps on — a typed data store, a document pipeline, hybrid search,
 citation-grounded retrieval, multi-tenant isolation, least-privilege access
-control, and an audited compliance posture, behind one coherent API plus a Node
-SDK, a CLI, and an MCP server.
+control, and an audited compliance posture, behind one coherent API. The same
+typed model is reachable both app-natively (typed SDKs for TypeScript, Python, and
+Java; a forkable data-plane app and React toolkit) and agent-natively (an official
+MCP server), with a CLI for provisioning.
 
 The current surface spans: Documents and structured Records (with schema-defined
 indexing, lookup/range queries, and folders), hybrid Search (BM25 + vector, RRF
@@ -17,12 +19,12 @@ reporting.
 
 Most integrations should NOT hand-roll HTTP. Reach for a client:
 
-- **Node SDK (`@vectros-ai/sdk`)** — the typed, recommended path for application
-  code. `npm install @vectros-ai/sdk`, construct one client with a token and
-  environment, then call sub-clients grouped by area (`records`, `schemas`,
-  `documents`, `folders`, `search`, `inference`, `identity`, `auth`). Generated
-  from the same spec that drives the API, so method names and types match the API
-  exactly. Java and Python are also generated; Node is the verified reference.
+- **SDKs (`@vectros-ai/sdk` for TypeScript, plus Python and Java)** — the typed,
+  recommended path for application code. All three are generated from the same spec
+  that drives the API, so method names and types match it exactly. For TypeScript:
+  `npm install @vectros-ai/sdk`, construct one client with a token and environment,
+  then call sub-clients grouped by area (`records`, `schemas`, `documents`,
+  `folders`, `search`, `inference`, `identity`, `auth`).
 - **CLI (`@vectros-ai/cli`, `vectros`)** — provision from a terminal or CI:
   blueprints, app-contexts, identities, scoped keys, and a one-command MCP
   credential bootstrap (`npx -y @vectros-ai/cli bootstrap`). No code, no handling
