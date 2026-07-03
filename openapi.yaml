@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users, organizations, and clients.
-  version: "0.31.0"
+  version: "0.32.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -2258,8 +2258,10 @@ paths:
         \ matched) tells the two apart. With `?upsert=true`, the submitted `payload`/`title`\
         \ are also applied to the matched document (file-body divergence cannot be\
         \ diffed at upload-init — the bytes have not arrived yet — so the re-upload\
-        \ itself replaces the body; `?upsert=true` requires the `documents:u` scope).\
-        \ Requires the `documents:c` scope."
+        \ itself replaces the body). Creating a NEW document requires the `documents:c`\
+        \ scope. Re-uploading over an EXISTING document overwrites (and re-indexes)\
+        \ its body, so it is an update: it requires the `documents:u` scope (as does\
+        \ `?upsert=true` for the metadata)."
       operationId: uploadDocument
       parameters:
       - name: upsert
@@ -2298,8 +2300,10 @@ paths:
           description: "The request was invalid (for example, `fileName` or `fileType`\
             \ is missing)."
         "403":
-          description: "Your API key or token lacks the `documents:c` scope (or, with\
-            \ `?upsert=true`, the `documents:u` scope)."
+          description: "Your API key or token lacks the required scope: `documents:c`\
+            \ to create a new document, or `documents:u` to re-upload over (or `?upsert`\
+            \ the metadata of) an existing one — and, for a scoped token, the update\
+            \ authority must be correlated to the document."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -6955,13 +6959,25 @@ components:
           example: intake-doc-2024-0042
         status:
           type: string
-          description: "Processing status of the document. PENDING_UPLOAD, UPLOADED,\
-            \ EXTRACTING, and PENDING_INDEX are in-flight states; INDEXED means the\
-            \ document is indexed and searchable; SKIPPED means extraction produced\
-            \ no indexable text so there was nothing to index — the document is stored\
-            \ and retrievable, just not searchable (not an error); STORED means it\
-            \ is store-only (indexMode=NONE) — persisted and retrievable but by design\
-            \ not searchable; FAILED means processing failed."
+          description: "Lifecycle status you control. `ACTIVE` (the default) means\
+            \ the document is live and returned in search/recall; `ARCHIVED` means\
+            \ you have soft-retracted it — it is pulled from search but kept and recoverable\
+            \ (set it back to `ACTIVE` to restore). Set via the document update endpoint.\
+            \ Distinct from `indexStatus`, which reports the processing pipeline."
+          example: ACTIVE
+          enum:
+          - ACTIVE
+          - ARCHIVED
+        indexStatus:
+          type: string
+          description: "Processing status of the document (system-managed, read-only).\
+            \ PENDING_UPLOAD, UPLOADED, EXTRACTING, and PENDING_INDEX are in-flight\
+            \ states; INDEXED means the document is indexed and searchable; SKIPPED\
+            \ means extraction produced no indexable text so there was nothing to\
+            \ index — the document is stored and retrievable, just not searchable\
+            \ (not an error); STORED means it is store-only (indexMode=NONE) — persisted\
+            \ and retrievable but by design not searchable; FAILED means processing\
+            \ failed."
           example: INDEXED
           enum:
           - PENDING_UPLOAD
@@ -7172,6 +7188,19 @@ components:
             \ (the default). Ignored on create."
           format: int64
           example: 5
+        status:
+          type: string
+          description: "Caller-controlled lifecycle status. `ACTIVE` (the default)\
+            \ keeps the document live and searchable; `ARCHIVED` soft-retracts it\
+            \ — the document is pulled from search/recall but kept and recoverable\
+            \ (set it back to `ACTIVE` to re-index and restore). Use this to retire\
+            \ superseded content without deleting it. On update, omit to leave the\
+            \ current lifecycle status unchanged. Distinct from the read-only `indexStatus`\
+            \ (the processing pipeline)."
+          example: ACTIVE
+          enum:
+          - ACTIVE
+          - ARCHIVED
       description: "Request body for creating or updating a text-ingested document.\
         \ Update semantics (PUT): omitted fields are preserved — sending null does\
         \ not clear a field; `payload` is replaced in full when supplied (not deep-merged);\
