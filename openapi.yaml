@@ -1,8 +1,8 @@
 openapi: 3.0.1
 info:
   title: Vectros API
-  description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users, organizations, and clients.
-  version: "0.34.0"
+  description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
+  version: "0.35.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -64,18 +64,19 @@ paths:
         \ was actually revealed in plaintext. Metadata only — never the PHI itself.\
         \ This is the disclosure-accounting surface from which a covered entity derives\
         \ its HIPAA §164.528 accounting of disclosures. Provide at least one query\
-        \ axis: a subject (`subjectType` + `subjectId`, plus optional `clientId`)\
-        \ within a `contextId` for the primary accounting query; `resourceId` within\
-        \ a `contextId` for 'who read this record'; `callerKeyId` for 'what did this\
-        \ credential read' (account-wide forensic); or `contextId` alone to enumerate\
-        \ a whole context. `from`/`to` bound the time window. Results are scoped to\
-        \ your account, derived from your token — never from input. Requires the `access-log:r`\
-        \ scope."
+        \ axis: a subject (`subjectType` + `subjectId`) within a `contextId` for the\
+        \ primary accounting query; `resourceId` within a `contextId` for 'who read\
+        \ this record'; `callerKeyId` for 'what did this credential read' (account-wide\
+        \ forensic); or `contextId` alone to enumerate a whole context. `from`/`to`\
+        \ bound the time window. Results are scoped to your account, derived from\
+        \ your token — never from input. Requires the `access-log:r` scope."
       operationId: getAccessLog
       parameters:
       - name: subjectType
         in: query
-        description: "Kind of subject to account for: `user`, `client`, or `org`."
+        description: "Kind of subject to account for: `user`, or any ownership namespace\
+          \ — the built-in `org` and `client`, or one you registered such as `team`.\
+          \ A subject kind is your data, not a fixed list."
         schema:
           type: string
         example: user
@@ -94,13 +95,6 @@ paths:
         schema:
           type: string
         example: ctx_intake
-      - name: clientId
-        in: query
-        description: Further restrict a subject query to reads about a single nested
-          client/patient.
-        schema:
-          type: string
-        example: client_xyz789
       - name: from
         in: query
         description: "Start of the time window (ISO-8601 UTC, inclusive)."
@@ -465,8 +459,10 @@ paths:
         \ and `status` instead of returning it unchanged, set `?upsert=true` (this\
         \ also requires the `profiles:u` scope). You must provide exactly one of `scopes`\
         \ (an inline list of scopes) or `roleId` (a reference to a role); supplying\
-        \ both, or neither, is rejected. `identityOverrides` may set only `orgId`\
-        \ and `clientId`; any other key (including the account identifier or `userId`)\
+        \ both, or neither, is rejected. `identityOverrides` is keyed by ownership\
+        \ namespace in `scope:<namespace>` form — `scope:org` and `scope:client` for\
+        \ the reserved namespaces, or any namespace you have registered — and may\
+        \ name at most two; any other key (including the account identifier or `userId`)\
         \ is rejected. If you use a scoped credential, the profile's effective scopes\
         \ may not exceed your own; a root API key (`sk_`) is exempt. Requires the\
         \ `profiles:c` scope."
@@ -1298,389 +1294,6 @@ paths:
           description: Your token lacks the `billing:r` scope.
       security:
         - BearerAuth: []
-  /v1/clients:
-
-    get:
-      tags:
-      - Identity
-      summary: List clients
-      description: "Returns a paginated list of clients in your account. Narrow the\
-        \ results with `orgId` or `userId`, or use `externalId` for an exact lookup\
-        \ by your own identifier. For schema-bound clients, you can also query by\
-        \ a schema-declared lookup field using `type`, `field`, and one lookup mode\
-        \ (`value` for equality, `from`/`to` for a range, or `prefix`). The response\
-        \ is a `{data, nextCursor}` envelope; pass `nextCursor` back as `startFrom`\
-        \ to fetch the next page. Requires the `clients:r` scope."
-      operationId: listClients
-      parameters:
-      - name: orgId
-        in: query
-        description: Return only clients belonging to this organization. Pass the
-          Vectros-assigned UUID of an org; use `GET /v1/orgs?externalId=` to resolve
-          your own identifier to this UUID.
-        schema:
-          type: string
-        example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-      - name: userId
-        in: query
-        description: Return only clients owned by this user. Pass the Vectros-assigned
-          UUID of a user; use `GET /v1/users?externalId=` to resolve your own identifier
-          to this UUID.
-        schema:
-          type: string
-        example: 550e8400-e29b-41d4-a716-446655440000
-      - name: externalId
-        in: query
-        description: "Look up a client by your own `externalId`. Returns a single-element\
-          \ list, or an empty list if no client matches."
-        schema:
-          type: string
-        example: patient_789
-      - name: startFrom
-        in: query
-        description: Pagination cursor. Pass the `nextCursor` from the previous page
-          to fetch the next page; omit it for the first page.
-        schema:
-          type: string
-        example: f47ac10b-58cc-4372-a567-0e02b2c3d479
-      - name: limit
-        in: query
-        description: Maximum number of clients to return per page (1–100; defaults
-          to 20).
-        schema:
-          maximum: 100
-          minimum: 1
-          type: integer
-          format: int64
-          default: 20
-        example: 20
-      - name: type
-        in: query
-        description: Record type of the schema whose lookup fields you are querying.
-          Must be supplied together with `field` and exactly one lookup mode.
-        schema:
-          type: string
-        example: client_v1
-      - name: field
-        in: query
-        description: Name of the lookup field to filter by. Must be declared as a
-          lookup field on the schema identified by `type`. Supply it together with
-          `type` and exactly one lookup mode.
-        schema:
-          type: string
-        example: industry
-      - name: value
-        in: query
-        description: Exact value to match for `field` (equality mode). Mutually exclusive
-          with `from`/`to` and `prefix`. Not allowed for a sensitive field — use `POST
-          /v1/clients/lookup` instead so the value is not exposed in the URL.
-        schema:
-          type: string
-        example: healthcare
-      - name: from
-        in: query
-        description: "Inclusive lower bound for a range lookup. Requires `to`, and\
-          \ is only allowed on non-sensitive fields that have range queries enabled.\
-          \ Mutually exclusive with `value` and `prefix`."
-        schema:
-          type: string
-        example: 2024-01-01
-      - name: to
-        in: query
-        description: Inclusive upper bound for a range lookup. Requires `from`.
-        schema:
-          type: string
-        example: 2024-12-31
-      - name: prefix
-        in: query
-        description: Match clients whose value for `field` starts with this prefix.
-          Only allowed on string fields that have range queries enabled. Mutually
-          exclusive with `value` and `from`/`to`.
-        schema:
-          type: string
-        example: health
-      - name: order
-        in: query
-        description: "Sort direction for the results: `asc` (the default) or `desc`."
-        schema:
-          type: string
-          default: asc
-          enum:
-          - asc
-          - desc
-        example: asc
-      responses:
-        "200":
-          description: "A page of clients as a `{data, nextCursor}` envelope; `nextCursor`\
-            \ is null when no more pages remain."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ClientPage"
-      security:
-        - BearerAuth: []
-    post:
-      tags:
-      - Identity
-      summary: Create or retrieve a client (idempotent by externalId)
-      description: "Creates a new client identity in your account. This call is idempotent\
-        \ on `externalId`: if a client with the same `externalId` already exists,\
-        \ the existing record is returned instead of creating a duplicate. The response's\
-        \ `created` field (and the HTTP status — 201 when created, 200 when an existing\
-        \ client was returned) tells the two apart. To overwrite an existing client's\
-        \ content instead of returning it unchanged, set `?upsert=true` (this also\
-        \ requires the `clients:u` scope). Requires the `clients:c` scope."
-      operationId: createClient
-      parameters:
-      - name: upsert
-        in: query
-        description: "When `true`, if a client with the same `externalId` already\
-          \ exists its mutable fields are overwritten (the submitted `name`/`status`/`payload`/`orgId`/`schemaId`\
-          \ are applied) instead of being returned unchanged; the immutable `externalId`\
-          \ and ownership are never changed. A re-applied upsert whose content matches\
-          \ is a no-op. Defaults to `false`. Requires the `clients:u` scope in addition\
-          \ to `clients:c`."
-        schema:
-          type: boolean
-          default: false
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ClientRequest"
-        required: true
-      responses:
-        "201":
-          description: "A new client was created (`created: true`)."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ClientResponse"
-        "200":
-          description: "A client with the same `externalId` already existed and was\
-            \ returned (`created: false`) — unchanged for an idempotent create, or\
-            \ updated when `?upsert=true`."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ClientResponse"
-        "400":
-          description: "The request body failed validation (for example, a missing\
-            \ or malformed `externalId`)."
-        "403":
-          description: "Your API key or token lacks the `clients:c` scope required\
-            \ to create a client (or, with `?upsert=true`, the `clients:u` scope required\
-            \ to overwrite it)."
-        "429":
-          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
-              schema:
-                type: integer
-            X-RateLimit-Limit:
-              description: The maximum number of requests permitted per minute on your plan.
-              schema:
-                type: integer
-            X-RateLimit-Remaining:
-              description: Requests remaining in the current window. Always 0 on a 429 response.
-              schema:
-                type: integer
-      security:
-        - BearerAuth: []
-  /v1/clients/{id}:
-
-    get:
-      tags:
-      - Identity
-      summary: Get a client by ID
-      description: Returns a single client by its Vectros-assigned UUID. Requires
-        the `clients:r` scope.
-      operationId: getClient
-      parameters:
-      - name: id
-        in: path
-        description: The Vectros-assigned UUID of the client to retrieve.
-        required: true
-        schema:
-          type: string
-        example: f47ac10b-58cc-4372-a567-0e02b2c3d479
-      responses:
-        "200":
-          description: The requested client.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ClientResponse"
-        "404":
-          description: No client with the given ID exists in your account.
-      security:
-        - BearerAuth: []
-    put:
-      tags:
-      - Identity
-      summary: Update a client
-      description: Updates mutable fields on an existing client. Omitted fields are
-        preserved (a null does not clear a field); when `payload` is supplied it replaces
-        the stored payload in full rather than being deep-merged. Requires the `clients:u`
-        scope.
-      operationId: updateClient
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ClientRequest"
-        required: true
-      responses:
-        "200":
-          description: The updated client.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ClientResponse"
-        "404":
-          description: No client with the given ID exists in your account.
-        "429":
-          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
-              schema:
-                type: integer
-            X-RateLimit-Limit:
-              description: The maximum number of requests permitted per minute on your plan.
-              schema:
-                type: integer
-            X-RateLimit-Remaining:
-              description: Requests remaining in the current window. Always 0 on a 429 response.
-              schema:
-                type: integer
-      security:
-        - BearerAuth: []
-    delete:
-      tags:
-      - Identity
-      summary: Delete a client
-      description: Permanently deletes the client. This action cannot be undone. Requires
-        the `clients:d` scope.
-      operationId: deleteClient
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      responses:
-        "204":
-          description: The client was deleted. No response body is returned.
-        "404":
-          description: No client with the given ID exists in your account.
-        "429":
-          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
-              schema:
-                type: integer
-            X-RateLimit-Limit:
-              description: The maximum number of requests permitted per minute on your plan.
-              schema:
-                type: integer
-            X-RateLimit-Remaining:
-              description: Requests remaining in the current window. Always 0 on a 429 response.
-              schema:
-                type: integer
-      security:
-        - BearerAuth: []
-  /v1/clients/lookup:
-
-    post:
-      tags:
-      - Identity
-      summary: Look up clients by field value via a request body (safe for sensitive
-        fields)
-      description: "Body-based equivalent of the `type`/`field`/`value` lookup on\
-        \ `GET /v1/clients`. Use this when looking up by a sensitive (blind-indexed)\
-        \ field: the value travels in the request body rather than the URL. The `GET`\
-        \ list rejects a sensitive field's value and directs you here. The response\
-        \ is a `{data, nextCursor}` envelope. Requires the `clients:r` scope."
-      operationId: lookupClients
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/IdentityLookupRequest"
-        required: true
-      responses:
-        "200":
-          description: "A page of matching clients as a `{data, nextCursor}` envelope;\
-            \ `nextCursor` is null when no more pages remain."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ClientPage"
-        "400":
-          description: "The request body was missing or failed validation (for example,\
-            \ a missing `type` or `field`, or more than one lookup mode supplied)."
-        "429":
-          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
-              schema:
-                type: integer
-            X-RateLimit-Limit:
-              description: The maximum number of requests permitted per minute on your plan.
-              schema:
-                type: integer
-            X-RateLimit-Remaining:
-              description: Requests remaining in the current window. Always 0 on a 429 response.
-              schema:
-                type: integer
-      security:
-        - BearerAuth: []
-  /v1/clients/{id}/versions:
-
-    get:
-      tags:
-      - Identity
-      summary: Get a client's version history
-      description: "Returns the audit trail of changes to a client, newest first.\
-        \ Identity auditing is always on, so this history is always available; sensitive\
-        \ field values are redacted in each version. The response is a `{data, nextCursor}`\
-        \ envelope. Requires the `clients:r` scope."
-      operationId: getClientVersions
-      parameters:
-      - name: id
-        in: path
-        description: The Vectros-assigned UUID of the client whose history you want.
-        required: true
-        schema:
-          type: string
-      - name: startFrom
-        in: query
-        description: Pagination cursor. Pass the `nextCursor` from the previous page
-          to fetch the next page; omit it for the first page.
-        schema:
-          type: string
-      responses:
-        "200":
-          description: "A page of version-history entries as a `{data, nextCursor}`\
-            \ envelope; `nextCursor` is null when no more pages remain."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ModelDataVersionPage"
-        "404":
-          description: No client with the given ID exists in your account.
-      security:
-        - BearerAuth: []
   /v1/documents:
 
     get:
@@ -1688,9 +1301,9 @@ paths:
       - Documents
       summary: List documents
       description: "Returns a paginated list of your documents, optionally filtered\
-        \ by folder (`folderId`) and/or owner (`userId`, `orgId`, `clientId`, or `scope`).\
-        \ The response is a `{data, nextCursor}` envelope; pass `nextCursor` back\
-        \ as `startFrom` to fetch the next page. Requires the `documents:r` scope."
+        \ by folder (`folderId`) and/or owner (`userId` or `scope`). The response\
+        \ is a `{data, nextCursor}` envelope; pass `nextCursor` back as `startFrom`\
+        \ to fetch the next page. Requires the `documents:r` scope."
       operationId: listDocuments
       parameters:
       - name: userId
@@ -1700,25 +1313,11 @@ paths:
         schema:
           type: string
         example: 550e8400-e29b-41d4-a716-446655440000
-      - name: orgId
-        in: query
-        description: "Filter by owning organization — the Vectros-assigned UUID of\
-          \ an organization. To resolve from your own identifier, call GET /v1/orgs?externalId=."
-        schema:
-          type: string
-        example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-      - name: clientId
-        in: query
-        description: "Filter by associated client — the Vectros-assigned UUID of a\
-          \ client. To resolve from your own identifier, call GET /v1/clients?externalId=."
-        schema:
-          type: string
-        example: f47ac10b-58cc-4372-a567-0e02b2c3d479
       - name: scope
         in: query
         description: "Filter to documents carrying this scope value, in `namespace:value`\
-          \ form — for example `group:eng-team`. `scope=org:<id>` and `scope=client:<id>`\
-          \ are equivalent to the `orgId` and `clientId` filters."
+          \ form — for example `group:eng-team`, `org:<id>`, or `client:<id>`. Resolve\
+          \ an entity's UUID from your own identifier via `GET /v1/entities/{namespace}?externalId=`."
         schema:
           type: string
         example: group:eng-team
@@ -2355,6 +1954,415 @@ paths:
                 type: integer
       security:
         - BearerAuth: []
+  /v1/entities/{namespace}:
+
+    get:
+      tags:
+      - Identity
+      summary: List identity entities
+      description: "Returns a paginated list of entities in a namespace. Filter by\
+        \ `userId` (entities owned by a user), by `externalId` (exact lookup by your\
+        \ own identifier), or by `scope` (`scope=<namespace>:<value>` — entities that\
+        \ have that value as a parent, e.g. `scope=org:6ba7...`). Naming this namespace's\
+        \ own name in `scope` resolves the entity itself (`scope=team:6ba7...` on\
+        \ `/v1/entities/team` returns that team), since an entity is always in its\
+        \ own scope. `userId` and `scope` can be combined to narrow on both dimensions\
+        \ at once; `externalId` identifies a single entity and cannot be combined\
+        \ with either. Requires the `entities:r:<namespace>` scope."
+      operationId: listEntities
+      parameters:
+      - name: namespace
+        in: path
+        description: The entity namespace.
+        required: true
+        schema:
+          type: string
+        example: team
+      - name: userId
+        in: query
+        description: Return only entities owned by this user (Vectros user ID).
+        schema:
+          type: string
+      - name: externalId
+        in: query
+        description: "Look up an entity by your own identifier. Returns a list with\
+          \ the single match, or empty."
+        schema:
+          type: string
+      - name: scope
+        in: query
+        description: "Filter by parent edge as `<namespace>:<value>` (e.g. `org:6ba7...`).\
+          \ Matches any of the entity's parents, not just its first. Naming this route's\
+          \ own namespace resolves the entity itself."
+        schema:
+          type: string
+      - name: type
+        in: query
+        description: "Schema record type whose lookup fields you want to query. Supply\
+          \ with `field` and one lookup mode (`value`, `from`/`to`, or `prefix`)."
+        schema:
+          type: string
+      - name: field
+        in: query
+        description: The schema-declared lookup field to filter on. Supply with `type`
+          and one lookup mode.
+        schema:
+          type: string
+      - name: value
+        in: query
+        description: "Exact value to match for `field` (equality). Not allowed for\
+          \ a sensitive field — use `POST /v1/entities/{namespace}/lookup`."
+        schema:
+          type: string
+      - name: from
+        in: query
+        description: Inclusive lower bound for a range lookup (requires `to`; range-enabled
+          fields).
+        schema:
+          type: string
+      - name: to
+        in: query
+        description: Inclusive upper bound for a range lookup (requires `from`).
+        schema:
+          type: string
+      - name: prefix
+        in: query
+        description: Match all values of `field` starting with this prefix (range-enabled
+          string fields).
+        schema:
+          type: string
+      - name: order
+        in: query
+        description: "Sort direction by the field's value for a `type`/`field` lookup:\
+          \ `asc` (ascending, the default) or `desc`. Lookup mode only — listing by\
+          \ namespace, `userId`, `scope`, or `externalId` does not take a sort direction\
+          \ and rejects this parameter."
+        schema:
+          type: string
+          default: asc
+          enum:
+          - asc
+          - desc
+        example: asc
+      - name: startFrom
+        in: query
+        description: Pagination cursor from a previous page's `nextCursor`.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Maximum entities per page (1-100; defaults to 20).
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+          format: int64
+          default: 20
+      responses:
+        "200":
+          description: "A page of entities as a `{data, nextCursor}` envelope."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityPage"
+      security:
+        - BearerAuth: []
+    post:
+      tags:
+      - Identity
+      summary: Create an identity entity (idempotent by external ID)
+      description: "Creates a new entity in the given namespace. This call is idempotent\
+        \ on `externalId` within the namespace: if an entity with the same `externalId`\
+        \ already exists, the existing record is returned instead of creating a duplicate\
+        \ (`created: false`, HTTP 200). To overwrite an existing entity's content\
+        \ instead of returning it unchanged, set `?upsert=true` (also requires the\
+        \ `entities:u:<namespace>` scope). The namespace must be entity-backed (`org`/`client`,\
+        \ or registered via `POST /v1/namespaces`). Requires the `entities:c:<namespace>`\
+        \ scope."
+      operationId: createEntity
+      parameters:
+      - name: namespace
+        in: path
+        description: The entity namespace.
+        required: true
+        schema:
+          type: string
+        example: team
+      - name: upsert
+        in: query
+        description: "When `true`, overwrite an existing entity's mutable fields instead\
+          \ of returning it unchanged. Requires the `entities:u:<namespace>` scope\
+          \ in addition to `entities:c:<namespace>`."
+        schema:
+          type: boolean
+          default: false
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntityRequest"
+        required: true
+      responses:
+        "201":
+          description: "A new entity was created (`created: true`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityResponse"
+        "200":
+          description: "An entity with the same `externalId` already existed and was\
+            \ returned (`created: false`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityResponse"
+        "400":
+          description: "The request was invalid, or the namespace is not entity-backed."
+        "403":
+          description: Your credential lacks the required `entities` scope for this
+            namespace.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+  /v1/entities/{namespace}/{id}:
+
+    get:
+      tags:
+      - Identity
+      summary: Get an identity entity by ID
+      description: Retrieves a single entity by its namespace and Vectros-assigned
+        ID. Requires the `entities:r:<namespace>` scope.
+      operationId: getEntity
+      parameters:
+      - name: namespace
+        in: path
+        description: The entity namespace.
+        required: true
+        schema:
+          type: string
+        example: team
+      - name: id
+        in: path
+        description: The Vectros-assigned ID (UUID) of the entity.
+        required: true
+        schema:
+          type: string
+        example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
+      responses:
+        "200":
+          description: The requested entity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityResponse"
+        "404":
+          description: No entity with this ID exists in this namespace.
+      security:
+        - BearerAuth: []
+    put:
+      tags:
+      - Identity
+      summary: Update an identity entity
+      description: "Updates the mutable fields of an entity. Omitted fields are preserved\
+        \ (a null value does not clear a field), and the `payload` object is replaced\
+        \ in full when supplied. Providing `scopes` replaces the entity's parent edges.\
+        \ Requires the `entities:u:<namespace>` scope."
+      operationId: updateEntity
+      parameters:
+      - name: namespace
+        in: path
+        description: The entity namespace.
+        required: true
+        schema:
+          type: string
+        example: team
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntityRequest"
+        required: true
+      responses:
+        "200":
+          description: The updated entity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityResponse"
+        "404":
+          description: No entity with this ID exists in this namespace.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+    delete:
+      tags:
+      - Identity
+      summary: Delete an identity entity
+      description: Permanently deletes an entity. This action cannot be undone. Requires
+        the `entities:d:<namespace>` scope.
+      operationId: deleteEntity
+      parameters:
+      - name: namespace
+        in: path
+        description: The entity namespace.
+        required: true
+        schema:
+          type: string
+        example: team
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: The entity was deleted. No content is returned.
+        "404":
+          description: No entity with this ID exists in this namespace.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+  /v1/entities/{namespace}/lookup:
+
+    post:
+      tags:
+      - Identity
+      summary: Look up entities by field value (request-body variant)
+      description: "Looks up entities in a namespace by a schema-declared field value,\
+        \ with the criteria in the request body instead of the URL. Use this for a\
+        \ sensitive field: the value travels in the body and never appears in the\
+        \ URL. Body equivalent of the `type`/`field`/`value` lookup on `GET /v1/entities/{namespace}`,\
+        \ which rejects sensitive-field values and directs you here. Requires the\
+        \ `entities:r:<namespace>` scope."
+      operationId: lookupEntities
+      parameters:
+      - name: namespace
+        in: path
+        description: The entity namespace.
+        required: true
+        schema:
+          type: string
+        example: team
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IdentityLookupRequest"
+        required: true
+      responses:
+        "200":
+          description: "A page of matching entities as a `{data, nextCursor}` envelope."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityPage"
+        "400":
+          description: "The lookup request was invalid — e.g. missing `type`/`field`,\
+            \ or more than one lookup mode."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+  /v1/entities/{namespace}/{id}/versions:
+
+    get:
+      tags:
+      - Identity
+      summary: Get an entity's version history
+      description: "Returns the audit trail of changes made to an entity, newest first.\
+        \ Sensitive field values are redacted in the history. Requires the `entities:r:<namespace>`\
+        \ scope."
+      operationId: getEntityVersions
+      parameters:
+      - name: namespace
+        in: path
+        description: The entity namespace.
+        required: true
+        schema:
+          type: string
+        example: team
+      - name: id
+        in: path
+        description: The Vectros-assigned ID (UUID) of the entity.
+        required: true
+        schema:
+          type: string
+      - name: startFrom
+        in: query
+        description: Pagination cursor from a previous page's `nextCursor`.
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "A page of historical versions as a `{data, nextCursor}` envelope."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelDataVersionPage"
+        "404":
+          description: No entity with this ID exists in this namespace.
+      security:
+        - BearerAuth: []
   /v1/erasure-requests:
 
     post:
@@ -2539,9 +2547,9 @@ paths:
       description: "Returns a paginated list of your folders. Pass `parentFolderId`\
         \ to list the direct children of a specific folder (tree navigation); omit\
         \ it for a flat list across your account. You can also filter by owner using\
-        \ `userId`, `orgId`, or `clientId`. Results are returned as a `{data, nextCursor}`\
-        \ envelope — pass `nextCursor` as `startFrom` to fetch the next page. Requires\
-        \ the `folders:r` scope."
+        \ `userId` or `scope`. Results are returned as a `{data, nextCursor}` envelope\
+        \ — pass `nextCursor` as `startFrom` to fetch the next page. Requires the\
+        \ `folders:r` scope."
       operationId: listFolders
       parameters:
       - name: parentFolderId
@@ -2552,14 +2560,6 @@ paths:
         schema:
           type: string
         example: f47ac10b-58cc-4372-a567-0e02b2c3d479
-      - name: orgId
-        in: query
-        description: Filter to folders owned by this organization — the Vectros-assigned
-          UUID of an organization. Use `GET /v1/orgs?externalId=` to resolve your
-          own external ID to this UUID.
-        schema:
-          type: string
-        example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
       - name: userId
         in: query
         description: Filter to folders owned by this user — the Vectros-assigned UUID
@@ -2568,14 +2568,14 @@ paths:
         schema:
           type: string
         example: 550e8400-e29b-41d4-a716-446655440000
-      - name: clientId
+      - name: scope
         in: query
-        description: Filter to folders associated with this client — the Vectros-assigned
-          UUID of a client. Use `GET /v1/clients?externalId=` to resolve your own
-          external ID to this UUID.
+        description: "Filter to folders carrying this scope value, in `namespace:value`\
+          \ form — for example `group:eng-team`, `org:<id>`, or `client:<id>`. Resolve\
+          \ an entity's UUID from your own identifier via `GET /v1/entities/{namespace}?externalId=`."
         schema:
           type: string
-        example: f47ac10b-58cc-4372-a567-0e02b2c3d479
+        example: group:eng-team
       - name: startFrom
         in: query
         description: Pagination cursor. Pass the `nextCursor` value from the previous
@@ -2791,12 +2791,12 @@ paths:
       - Folders
       summary: Partially update a folder (RFC 7386 JSON Merge Patch)
       description: "Partially updates a folder using an RFC 7386 JSON Merge Patch.\
-        \ The `name`, `description`, and ownership fields (`userId`, `orgId`, `clientId`)\
-        \ are applied when present and left unchanged when omitted; sending any of\
-        \ these as null is rejected, because clearing a field is not supported in\
-        \ this release (omit it instead). `slug` and `parentFolderId` are immutable\
-        \ — a folder cannot be re-slugged or moved via the API — and the request is\
-        \ rejected if either is present. Pass `expectedVersion` for optimistic concurrency\
+        \ The `name`, `description`, and ownership fields (`userId`, `scopes`) are\
+        \ applied when present and left unchanged when omitted; sending any of these\
+        \ as null is rejected, because clearing a field is not supported in this release\
+        \ (omit it instead). `slug` and `parentFolderId` are immutable — a folder\
+        \ cannot be re-slugged or moved via the API — and the request is rejected\
+        \ if either is present. Pass `expectedVersion` for optimistic concurrency\
         \ (you get a 409 if the folder changed since you last read it). Requires the\
         \ `folders:u` scope."
       operationId: patchFolder
@@ -2822,7 +2822,8 @@ paths:
         "400":
           description: "The patch was invalid — it attempted to change an immutable\
             \ field (`slug` or `parentFolderId`) or set `name`, `description`, or\
-            \ an ownership field (`userId`, `orgId`, `clientId`) to null."
+            \ `userId` to null. To clear the folder's scope ownership, send `\"scopes\"\
+            : []`."
         "404":
           description: No folder with the given ID exists in your account.
         "409":
@@ -2906,250 +2907,68 @@ paths:
                 $ref: "#/components/schemas/ModelsResponse"
       security:
         - BearerAuth: []
-  /v1/orgs:
+  /v1/namespaces/{namespace}:
 
     get:
       tags:
       - Identity
-      summary: List organizations
-      description: "Returns a paginated list of organizations in your account. Filter\
-        \ by `userId` to return only the organizations owned by a specific user, or\
-        \ by `externalId` for an exact lookup using your own identifier. You can also\
-        \ query schema-declared lookup fields by supplying `type` and `field` together\
-        \ with one lookup mode (`value` for equality, `from`/`to` for a range, or\
-        \ `prefix`). Requires the `orgs:r` scope."
-      operationId: listOrgs
+      summary: Get a scope namespace
+      description: Retrieves a single scope-namespace registration by name. The reserved
+        built-ins `org` and `client` are always resolvable.
+      operationId: getNamespace
       parameters:
-      - name: userId
-        in: query
-        description: "Return only organizations owned by this user, given as the Vectros-assigned\
-          \ ID (UUID) of a user. To resolve a user ID from your own identifier, call\
-          \ `GET /v1/users?externalId=`."
-        schema:
-          type: string
-        example: 550e8400-e29b-41d4-a716-446655440000
-      - name: externalId
-        in: query
-        description: "Look up an organization by your own identifier. Returns a list\
-          \ with the single matching organization, or an empty list if none matches."
-        schema:
-          type: string
-        example: clinic_001
-      - name: startFrom
-        in: query
-        description: Pagination cursor. Pass the `nextCursor` from the previous page
-          to fetch the next page; omit it for the first page.
-        schema:
-          type: string
-        example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-      - name: limit
-        in: query
-        description: Maximum number of organizations to return per page (1–100; defaults
-          to 20).
-        schema:
-          maximum: 100
-          minimum: 1
-          type: integer
-          format: int64
-          default: 20
-        example: 20
-      - name: type
-        in: query
-        description: "The schema record type whose lookup fields you want to query.\
-          \ Must be supplied together with `field` and exactly one lookup mode (`value`,\
-          \ `from`/`to`, or `prefix`)."
-        schema:
-          type: string
-        example: org_v1
-      - name: field
-        in: query
-        description: The schema-declared lookup field to filter on. Must be one of
-          the lookup fields defined on the schema named by `type`. Supplied together
-          with `type` and one lookup mode.
-        schema:
-          type: string
-        example: region
-      - name: value
-        in: query
-        description: Exact value to match for `field` (equality lookup). Mutually
-          exclusive with `from`/`to` and `prefix`. Not allowed for a sensitive field
-          — use `POST /v1/orgs/lookup` instead so the value is not exposed in the
-          URL.
-        schema:
-          type: string
-        example: us-east
-      - name: from
-        in: query
-        description: "Inclusive lower bound for a range lookup. Requires `to`, and\
-          \ is only supported on non-sensitive fields that have range lookups enabled.\
-          \ Mutually exclusive with `value` and `prefix`."
-        schema:
-          type: string
-        example: 2024-01-01
-      - name: to
-        in: query
-        description: Inclusive upper bound for a range lookup. Requires `from`.
-        schema:
-          type: string
-        example: 2024-12-31
-      - name: prefix
-        in: query
-        description: Match all values for `field` that start with this prefix. Only
-          supported on string fields that have range lookups enabled. Mutually exclusive
-          with `value` and `from`/`to`.
-        schema:
-          type: string
-        example: us-
-      - name: order
-        in: query
-        description: "Sort direction for lookup results: `asc` (ascending, the default)\
-          \ or `desc` (descending)."
-        schema:
-          type: string
-          default: asc
-          enum:
-          - asc
-          - desc
-        example: asc
-      responses:
-        "200":
-          description: "A page of organizations as a `{data, nextCursor}` envelope.\
-            \ `nextCursor` is an opaque cursor for the next page, or null when no\
-            \ more pages remain."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OrgPage"
-      security:
-        - BearerAuth: []
-    post:
-      tags:
-      - Identity
-      summary: Create an organization (idempotent by external ID)
-      description: "Creates a new organization in your account. This call is idempotent\
-        \ on `externalId`: if an organization with the same `externalId` already exists,\
-        \ the existing record is returned instead of creating a duplicate. The response's\
-        \ `created` field (and the HTTP status — 201 when created, 200 when an existing\
-        \ organization was returned) tells the two apart. To overwrite an existing\
-        \ organization's content instead of returning it unchanged, set `?upsert=true`\
-        \ (this also requires the `orgs:u` scope). Requires the `orgs:c` scope."
-      operationId: createOrg
-      parameters:
-      - name: upsert
-        in: query
-        description: "When `true`, if an organization with the same `externalId` already\
-          \ exists its mutable fields are overwritten (the submitted `name`/`status`/`payload`/`schemaId`\
-          \ are applied) instead of being returned unchanged; the immutable `externalId`\
-          \ and ownership are never changed. A re-applied upsert whose content matches\
-          \ is a no-op. Defaults to `false`. Requires the `orgs:u` scope in addition\
-          \ to `orgs:c`."
-        schema:
-          type: boolean
-          default: false
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/OrgRequest"
-        required: true
-      responses:
-        "201":
-          description: "A new organization was created (`created: true`)."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OrgResponse"
-        "200":
-          description: "An organization with the same `externalId` already existed\
-            \ and was returned (`created: false`) — unchanged for an idempotent create,\
-            \ or updated when `?upsert=true`."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OrgResponse"
-        "400":
-          description: The request was invalid — for example a missing required field
-            or a malformed value.
-        "403":
-          description: "Your API key or token lacks the `orgs:c` scope required to\
-            \ create an organization (or, with `?upsert=true`, the `orgs:u` scope\
-            \ required to overwrite it)."
-        "429":
-          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
-              schema:
-                type: integer
-            X-RateLimit-Limit:
-              description: The maximum number of requests permitted per minute on your plan.
-              schema:
-                type: integer
-            X-RateLimit-Remaining:
-              description: Requests remaining in the current window. Always 0 on a 429 response.
-              schema:
-                type: integer
-      security:
-        - BearerAuth: []
-  /v1/orgs/{id}:
-
-    get:
-      tags:
-      - Identity
-      summary: Get an organization by ID
-      description: "Retrieves a single organization by its Vectros-assigned ID, returning\
-        \ its current name, status, payload, and schema binding. Requires the `orgs:r`\
-        \ scope."
-      operationId: getOrg
-      parameters:
-      - name: id
+      - name: namespace
         in: path
-        description: The Vectros-assigned ID (UUID) of the organization to retrieve.
+        description: The namespace name.
         required: true
         schema:
           type: string
-        example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
+        example: team
       responses:
         "200":
-          description: The requested organization.
+          description: The requested namespace.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OrgResponse"
+                $ref: "#/components/schemas/NamespaceResponse"
         "404":
-          description: No organization with this ID exists in your account.
+          description: No namespace with this name is registered in your account.
       security:
         - BearerAuth: []
     put:
       tags:
       - Identity
-      summary: Update an organization
-      description: "Updates the mutable fields of an organization. Omitted fields\
-        \ are preserved (a null value does not clear a field), and the `payload` object\
-        \ is replaced in full when supplied rather than deep-merged. Requires the\
-        \ `orgs:u` scope."
-      operationId: updateOrg
+      summary: Update a scope namespace
+      description: "Updates the mutable fields (`entityBacked`, `defaultSchemaId`)\
+        \ of a registered namespace. The namespace name itself is immutable. Requires\
+        \ a root API key. The reserved built-ins cannot be updated."
+      operationId: updateNamespace
       parameters:
-      - name: id
+      - name: namespace
         in: path
+        description: The namespace name.
         required: true
         schema:
           type: string
+        example: team
       requestBody:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/OrgRequest"
+              $ref: "#/components/schemas/NamespaceRequest"
         required: true
       responses:
         "200":
-          description: The updated organization.
+          description: The updated namespace.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OrgResponse"
+                $ref: "#/components/schemas/NamespaceResponse"
+        "403":
+          description: "A root API key is required, or the namespace is a reserved\
+            \ built-in."
         "404":
-          description: No organization with this ID exists in your account.
+          description: No namespace with this name is registered in your account.
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -3170,21 +2989,28 @@ paths:
     delete:
       tags:
       - Identity
-      summary: Delete an organization
-      description: Permanently deletes an organization. This action cannot be undone.
-        Requires the `orgs:d` scope.
-      operationId: deleteOrg
+      summary: Delete a scope namespace
+      description: Deletes a registered scope namespace. Requires a root API key.
+        The reserved built-ins cannot be deleted. A namespace that still has entities
+        cannot be deleted (409) — delete its entities first; this keeps them reachable
+        by the account-teardown and erasure sweeps.
+      operationId: deleteNamespace
       parameters:
-      - name: id
+      - name: namespace
         in: path
+        description: The namespace name.
         required: true
         schema:
           type: string
+        example: team
       responses:
         "204":
-          description: The organization was deleted. No content is returned.
+          description: The namespace registration was deleted.
+        "403":
+          description: "A root API key is required, or the namespace is a reserved\
+            \ built-in."
         "404":
-          description: No organization with this ID exists in your account.
+          description: No namespace with this name is registered in your account.
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -3202,90 +3028,80 @@ paths:
                 type: integer
       security:
         - BearerAuth: []
-  /v1/orgs/lookup:
-
-    post:
-      tags:
-      - Identity
-      summary: Look up organizations by field value (request-body variant)
-      description: "Looks up organizations by a schema-declared field value, with\
-        \ the search criteria sent in the request body instead of the URL. Use this\
-        \ when looking up by a sensitive field: the value travels in the body and\
-        \ is never exposed in the URL. This is the body-based equivalent of the `type`/`field`/`value`\
-        \ lookup on `GET /v1/orgs`, which rejects sensitive-field values and directs\
-        \ you here. Returns a `{data, nextCursor}` envelope. Requires the `orgs:r`\
-        \ scope."
-      operationId: lookupOrgs
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/IdentityLookupRequest"
-        required: true
-      responses:
-        "200":
-          description: "A page of matching organizations as a `{data, nextCursor}`\
-            \ envelope. `nextCursor` is an opaque cursor for the next page, or null\
-            \ when no more pages remain."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OrgPage"
-        "400":
-          description: "The lookup request was invalid — for example a missing `type`\
-            \ or `field`, or more than one lookup mode supplied."
-        "429":
-          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
-              schema:
-                type: integer
-            X-RateLimit-Limit:
-              description: The maximum number of requests permitted per minute on your plan.
-              schema:
-                type: integer
-            X-RateLimit-Remaining:
-              description: Requests remaining in the current window. Always 0 on a 429 response.
-              schema:
-                type: integer
-      security:
-        - BearerAuth: []
-  /v1/orgs/{id}/versions:
+  /v1/namespaces:
 
     get:
       tags:
       - Identity
-      summary: Get an organization's version history
-      description: "Returns the audit trail of changes made to an organization, newest\
-        \ first. Version history is always recorded for identity entities, and sensitive\
-        \ field values are redacted in the history. Requires the `orgs:r` scope."
-      operationId: getOrgVersions
+      summary: List scope namespaces
+      description: "Returns the scope namespaces registered in your account, with\
+        \ the reserved built-ins `org` and `client` listed first. Returns a `{data,\
+        \ nextCursor}` envelope."
+      operationId: listNamespaces
       parameters:
-      - name: id
-        in: path
-        description: The Vectros-assigned ID (UUID) of the organization whose history
-          you want.
-        required: true
-        schema:
-          type: string
       - name: startFrom
         in: query
-        description: Pagination cursor. Pass the `nextCursor` value from the previous
-          page to fetch the next page of history.
+        description: Pagination cursor from a previous page's `nextCursor`.
         schema:
           type: string
+      - name: limit
+        in: query
+        description: Maximum registrations per page (1-100; defaults to 20).
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+          format: int64
+          default: 20
       responses:
         "200":
-          description: "A page of historical versions as a `{data, nextCursor}` envelope.\
-            \ `nextCursor` is an opaque cursor for the next page, or null when no\
-            \ more pages remain."
+          description: "A page of namespaces as a `{data, nextCursor}` envelope."
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ModelDataVersionPage"
-        "404":
-          description: No organization with this ID exists in your account.
+                $ref: "#/components/schemas/NamespacePage"
+      security:
+        - BearerAuth: []
+    post:
+      tags:
+      - Identity
+      summary: Register a scope namespace
+      description: Registers a new scope namespace and declares whether its values
+        resolve to identity entities (`entityBacked`). Requires a root API key. The
+        reserved names `org` and `client` are built in and cannot be registered.
+      operationId: registerNamespace
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NamespaceRequest"
+        required: true
+      responses:
+        "201":
+          description: The namespace was registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NamespaceResponse"
+        "400":
+          description: "The namespace name is invalid, reserved, or already registered."
+        "403":
+          description: A root API key is required to register a namespace.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/ping:
@@ -3519,11 +3335,11 @@ paths:
         \ lists all records in a folder (any type); and `recent=true` returns the\
         \ account-wide recently-updated feed across all types, newest first. You may\
         \ combine `type` with `folderId` to list a single type within a folder. The\
-        \ owner filters (`userId`, `orgId`, `clientId`, `scope`) further narrow the\
-        \ type and folder modes; the `recent` feed is standalone and ignores all filters.\
-        \ Each token only sees the record types it is scoped to read. Requires the\
-        \ `records:r` scope. By default the response returns the indexed projection\
-        \ of each record; set `includePayload=true` to include full payloads."
+        \ owner filters (`userId`, `scope`) further narrow the type and folder modes;\
+        \ the `recent` feed is standalone and ignores all filters. Each token only\
+        \ sees the record types it is scoped to read. Requires the `records:r` scope.\
+        \ By default the response returns the indexed projection of each record; set\
+        \ `includePayload=true` to include full payloads."
       operationId: listRecords
       parameters:
       - name: type
@@ -3549,27 +3365,12 @@ paths:
         schema:
           type: string
         example: 550e8400-e29b-41d4-a716-446655440000
-      - name: orgId
-        in: query
-        description: Filter to records owned by this organization. The value is the
-          Vectros-assigned UUID of an organization; resolve one via `GET /v1/orgs?externalId=`.
-        schema:
-          type: string
-        example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-      - name: clientId
-        in: query
-        description: Filter to records owned by this client (requires `userId` or
-          `orgId` as well). The value is the Vectros-assigned UUID of a client; resolve
-          one via `GET /v1/clients?externalId=`.
-        schema:
-          type: string
-        example: f47ac10b-58cc-4372-a567-0e02b2c3d479
       - name: scope
         in: query
         description: "Filter to records carrying this scope value, in `namespace:value`\
-          \ form — for example `group:eng-team`. `scope=org:<id>` and `scope=client:<id>`\
-          \ are equivalent to the `orgId` and `clientId` filters. Combine with `type`\
-          \ or `folderId`."
+          \ form — for example `group:eng-team`, `org:<id>`, or `client:<id>`. Resolve\
+          \ an entity's UUID from your own identifier via `GET /v1/entities/{namespace}?externalId=`.\
+          \ Combine with `type` or `folderId`."
         schema:
           type: string
         example: group:eng-team
@@ -3880,13 +3681,13 @@ paths:
         \ send overwrite (recursing into nested objects), a key set to null is deleted,\
         \ and keys you omit are left unchanged — so you can change a single field\
         \ without re-sending the rest (unlike the full-replacement PUT). Top-level\
-        \ fields (`status`, `folderId`, `userId`, `orgId`, `clientId`) are set when\
-        \ present and left unchanged when omitted; sending a top-level field as null\
-        \ is rejected (clearing a top-level field is not supported in this release\
-        \ — omit it instead). `typeName`, `schemaId`, `externalId`, and `indexMode`\
-        \ are immutable and rejected if present. The merged result is validated against\
-        \ the schema. Pass `expectedVersion` to make the patch conditional (optimistic\
-        \ concurrency, 409 on conflict). Requires the `records:u:<type>` scope."
+        \ fields (`status`, `folderId`, `userId`, `scopes`) are set when present and\
+        \ left unchanged when omitted; sending a top-level field as null is rejected\
+        \ (clearing a top-level field is not supported in this release — omit it instead).\
+        \ `typeName`, `schemaId`, `externalId`, and `indexMode` are immutable and\
+        \ rejected if present. The merged result is validated against the schema.\
+        \ Pass `expectedVersion` to make the patch conditional (optimistic concurrency,\
+        \ 409 on conflict). Requires the `records:u:<type>` scope."
       operationId: patchRecord
       parameters:
       - name: id
@@ -4176,10 +3977,10 @@ paths:
       - Schemas
       summary: List record schemas
       description: "Returns a paginated list of the record schemas defined in your\
-        \ account. Filter by `userId` or `orgId` to scope to an owner, by `surface`\
+        \ account. Filter by `userId` or `scope` to scope to an owner, by `surface`\
         \ to list the types bindable to one surface, or by `recordType` to resolve\
         \ the single schema for a type directly. Filtering by an identity surface\
-        \ (user, org, or client) lists your account-wide identity schemas regardless\
+        \ (`user` or `entity`) lists your account-wide identity schemas regardless\
         \ of the calling context; filtering by record or document lists within the\
         \ calling context. Requires the `schemas:r` scope."
       operationId: listSchemas
@@ -4192,22 +3993,26 @@ paths:
         schema:
           type: string
         example: 550e8400-e29b-41d4-a716-446655440000
-      - name: orgId
+      - name: scope
         in: query
-        description: Filter to schemas owned by this organization — the Vectros-assigned
-          UUID of an organization in your account. Use `GET /v1/orgs?externalId=`
-          to resolve a UUID from your own external id.
+        description: "Filter to schemas carrying this scope value, as a single `namespace:value`\
+          \ entry — for example `org:6ba7b810-9dad-11d1-80b4-00c04fd430c8` or `group:eng-team`.\
+          \ `org` and `client` are built-in namespaces; others are custom scopes you\
+          \ define. Resolve a namespace's UUID from your own identifier with `GET\
+          \ /v1/entities/{namespace}?externalId=`."
         schema:
           type: string
-        example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
+        example: org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
       - name: surface
         in: query
-        description: "Filter to schemas bindable to this surface: record, document,\
-          \ user, org, or client. Returns only schemas whose allowed surfaces include\
-          \ the given one — useful for listing, say, document types separately from\
-          \ record types. The identity surfaces (user, org, client) are account-wide:\
-          \ filtering by one lists your account's identity schemas regardless of the\
-          \ calling context, whereas record and document list within the calling context."
+        description: "Filter to schemas bindable to this surface: `record`, `document`,\
+          \ `user`, or `entity` — identity entities in any namespace (`org`, `client`,\
+          \ or one you registered) bind under the single `entity` surface. Returns\
+          \ only schemas whose allowed surfaces include the given one — useful for\
+          \ listing, say, document types separately from record types. The identity\
+          \ surfaces (`user`, `entity`) are account-wide: filtering by one lists your\
+          \ account's identity schemas regardless of the calling context, whereas\
+          \ `record` and `document` list within the calling context."
         schema:
           type: string
         example: document
@@ -4217,9 +4022,9 @@ paths:
           \ handle for a schema, and the direct alternative to remembering its opaque\
           \ id. Returns a one-element page, or an empty page if no such schema exists.\
           \ Resolved in the calling context for record and document types; combine\
-          \ with `surface=user`, `org`, or `client` to resolve an account-wide identity\
-          \ schema. Mutually exclusive with `userId`/`orgId` — when supplied, `recordType`\
-          \ takes precedence."
+          \ with `surface=user` or `surface=entity` to resolve an account-wide identity\
+          \ schema. Takes precedence over `userId`; a `scope` filter still applies,\
+          \ so a resolved schema outside that scope returns an empty page."
         schema:
           type: string
         example: intake_form
@@ -4577,7 +4382,7 @@ paths:
                 identity:
                   userId: 550e8400-e29b-41d4-a716-446655440000
                 dataScope:
-                  orgId:
+                  scope:org:
                   - 6ba7b810-9dad-11d1-80b4-00c04fd430c8
               expiresInSeconds: 3600
         required: true
@@ -5388,22 +5193,13 @@ components:
           example: ctx_intake
         subjectType:
           type: string
-          description: "The kind of subject whose PHI was read: `user`, `client`,\
-            \ or `org`."
+          description: "The kind of subject whose PHI was read: `user`, or an ownership\
+            \ namespace such as `org` or `client`."
           example: user
-          enum:
-          - user
-          - client
-          - org
         subjectId:
           type: string
           description: Identifier of the data subject whose PHI was read.
           example: user_abc123
-        clientId:
-          type: string
-          description: "Identifier of the nested client/patient the read was scoped\
-            \ to, when applicable."
-          example: client_xyz789
         callerKeyId:
           type: string
           description: The credential (API key / scoped token key id) that performed
@@ -5731,8 +5527,9 @@ components:
         identityOverrides:
           type: object
           additionalProperties: true
-          description: Per-context identity overrides. Only `orgId` and `clientId`
-            may be overridden.
+          description: "Per-context identity overrides, keyed by ownership namespace\
+            \ in `scope:<namespace>` form (for example `scope:org`, `scope:client`,\
+            \ `scope:group`). Read back exactly as authored."
         status:
           type: string
           description: "Profile lifecycle status: `active` or `suspended`."
@@ -5788,23 +5585,20 @@ components:
             description: "Attribute filters narrowing data this clause applies to,\
               \ keyed per ownership dimension: 'userId' (the authoring principal)\
               \ and namespaced scopes 'scope:<namespace>' ('scope:org', 'scope:client',\
-              \ 'scope:group', ...). 'orgId'/'clientId' are accepted as shorthand\
-              \ for 'scope:org'/'scope:client' and read back in the namespaced form.\
-              \ Empty object = applies to ALL data within the tenant. Multiple keys\
-              \ must ALL match (AND); include null in an allowed-value list (e.g.\
-              \ {\"scope:org\": [\"orgX\", null]}) to ALSO grant access to records\
-              \ that have no value in THAT dimension."
+              \ 'scope:group', ...). Empty object = applies to ALL data within the\
+              \ tenant. Multiple keys must ALL match (AND); include null in an allowed-value\
+              \ list (e.g. {\"scope:org\": [\"orgX\", null]}) to ALSO grant access\
+              \ to records that have no value in THAT dimension."
             example:
               scope:org:
               - org_engineering
           description: "Attribute filters narrowing data this clause applies to, keyed\
             \ per ownership dimension: 'userId' (the authoring principal) and namespaced\
             \ scopes 'scope:<namespace>' ('scope:org', 'scope:client', 'scope:group',\
-            \ ...). 'orgId'/'clientId' are accepted as shorthand for 'scope:org'/'scope:client'\
-            \ and read back in the namespaced form. Empty object = applies to ALL\
-            \ data within the tenant. Multiple keys must ALL match (AND); include\
-            \ null in an allowed-value list (e.g. {\"scope:org\": [\"orgX\", null]})\
-            \ to ALSO grant access to records that have no value in THAT dimension."
+            \ ...). Empty object = applies to ALL data within the tenant. Multiple\
+            \ keys must ALL match (AND); include null in an allowed-value list (e.g.\
+            \ {\"scope:org\": [\"orgX\", null]}) to ALSO grant access to records that\
+            \ have no value in THAT dimension."
           example:
             scope:org:
             - org_engineering
@@ -5840,12 +5634,14 @@ components:
         identityOverrides:
           type: object
           additionalProperties: true
-          description: Optional per-context identity overrides. Only `orgId` and `clientId`
-            may be overridden; any other key is rejected. An empty or omitted map
-            applies no overrides — the base identity from the user or key record is
-            used as-is.
+          description: "Optional per-context identity overrides, keyed by ownership\
+            \ namespace in `scope:<namespace>` form — `scope:org` and `scope:client`\
+            \ for the reserved namespaces, or any namespace you have registered (for\
+            \ example `scope:group`). At most two namespaces may be overridden; any\
+            \ other key is rejected. An empty or omitted map applies no overrides\
+            \ — the base identity from the user or key record is used as-is."
           example:
-            orgId: org_engineering
+            scope:org: org_engineering
         status:
           type: string
           description: Profile lifecycle status. `active` permits token minting; `suspended`
@@ -6438,9 +6234,7 @@ components:
       properties:
         users:
           $ref: "#/components/schemas/IdentitySurface"
-        orgs:
-          $ref: "#/components/schemas/IdentitySurface"
-        clients:
+        entities:
           $ref: "#/components/schemas/IdentitySurface"
       description: "Identity write + storage activity, broken down per identity surface.\
         \ Each surface mirrors the record shape: a write count (base + schema-lookup-field\
@@ -6813,202 +6607,6 @@ components:
       description: "Write counts and credits for a schema-driven surface (documents\
         \ / identity). Same shape as record writes: a base count plus the extra schema-lookup-field\
         \ writes, with the combined credits."
-    ClientResponse:
-      type: object
-      properties:
-        created:
-          type: boolean
-          description: "Whether this call created a new client. True when a new client\
-            \ was created; false when a client with the same `externalId` already\
-            \ existed and was returned unchanged (idempotent create) or updated (when\
-            \ `?upsert=true`). Present only on the create response (POST /v1/clients);\
-            \ absent on reads. The HTTP status mirrors it — 201 when created, 200\
-            \ when an existing client was returned."
-          example: true
-        id:
-          type: string
-          description: "The Vectros-assigned UUID for this client. Use this ID when\
-            \ referencing the client in token minting, record ownership, and filters."
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
-        externalId:
-          type: string
-          description: "Your own identifier for this client, supplied when it was\
-            \ created."
-          example: patient_789
-        name:
-          type: string
-          description: Display name for this client.
-          example: Jane Doe
-        status:
-          type: string
-          description: Lifecycle status of the client. `ACTIVE` clients can be used
-            normally; `SUSPENDED` clients are retained but blocked from new operations.
-          example: ACTIVE
-        orgId:
-          type: string
-          description: "The Vectros-assigned UUID of the organization this client\
-            \ belongs to, or null if the client is not associated with an org."
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        payload:
-          type: object
-          additionalProperties: true
-          description: "Free-form key-value attributes stored with this client. Sensitive\
-            \ fields are returned as `[redacted]` unless your token grants the sensitive-reveal\
-            \ scope for the client's schema."
-        schemaId:
-          type: string
-          description: "The ID of the schema that validates this client's payload\
-            \ and drives its lookup indexing, or null if the client is not schema-bound."
-          example: 550e8400-e29b-41d4-a716-446655440000
-        schemaVersion:
-          type: integer
-          description: The version of the governing schema that was in effect when
-            this client was last written. The client keeps the version it was stamped
-            with even after the schema is edited. Null when the client is not schema-bound.
-          format: int32
-          example: 3
-        createdAt:
-          type: string
-          description: "When the client was created, as an ISO-8601 UTC timestamp."
-          example: 2024-01-15T09:30:00Z
-      description: A client (subject) identity that you control.
-    ClientRequest:
-      required:
-      - externalId
-      type: object
-      properties:
-        externalId:
-          type: string
-          description: "Your own unique identifier for this client. Used for idempotent\
-            \ create: if a client with this `externalId` already exists, it is returned\
-            \ instead of creating a duplicate."
-          example: patient_789
-        name:
-          type: string
-          description: Display name for this client.
-          example: Jane Doe
-        status:
-          type: string
-          description: Lifecycle status of the client. `ACTIVE` clients can be used
-            normally; `SUSPENDED` clients are retained but blocked from new operations.
-            Defaults to `ACTIVE`.
-          example: ACTIVE
-          enum:
-          - ACTIVE
-          - SUSPENDED
-        orgId:
-          type: string
-          description: The organization this client belongs to. Must be the Vectros-assigned
-            UUID of an org created via `POST /v1/orgs`; use `GET /v1/orgs?externalId=`
-            to resolve your own identifier to this UUID.
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        payload:
-          type: object
-          additionalProperties: true
-          description: "Free-form key-value attributes to store with this client —\
-            \ handy for keeping extra data from your system without defining a schema.\
-            \ On update, the supplied object replaces the stored payload in full (it\
-            \ is not key-merged); omit it to leave the payload unchanged."
-          example:
-            dob: 1985-03-22
-            plan: premium
-        schemaId:
-          type: string
-          description: "Optional ID of a schema (created via `POST /v1/schemas`) that\
-            \ validates this client's payload and drives its lookup indexing. When\
-            \ set, the schema must belong to your account, the payload is validated\
-            \ against the schema's fields on save, and the schema's declared lookup\
-            \ fields become queryable via `GET /v1/clients?type=...&field=...&value=...`.\
-            \ When omitted, the payload is free-form and no lookup rows are written.\
-            \ On update, omit this field to leave it unchanged; once set, it cannot\
-            \ be cleared."
-          example: 550e8400-e29b-41d4-a716-446655440000
-      description: "Request body for creating or updating a client. On update (PUT),\
-        \ omitted fields are preserved — a null does not clear a field — and `payload`,\
-        \ when supplied, replaces the stored payload in full rather than being deep-merged."
-    ClientPage:
-      type: object
-      properties:
-        data:
-          type: array
-          description: "The items on this page, in the endpoint's natural order. Empty\
-            \ when there are no results."
-          items:
-            $ref: "#/components/schemas/ClientResponse"
-        nextCursor:
-          type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
-          nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
-      description: "A page of clients as a `{data, nextCursor}` envelope. `nextCursor`\
-        \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
-        \ or null when no more pages remain."
-    IdentityLookupRequest:
-      required:
-      - field
-      - type
-      type: object
-      properties:
-        type:
-          type: string
-          description: "The identity schema type whose lookup fields you are querying\
-            \ (for example, `person_v1`)."
-          example: person_v1
-        field:
-          type: string
-          description: "Name of the lookup field declared on the schema. For a field\
-            \ marked sensitive, this body variant is required (the GET variant rejects\
-            \ looking up by a sensitive value)."
-          example: ssn
-        value:
-          type: string
-          description: Exact value to match. Mutually exclusive with `from`/`to` and
-            `prefix`.
-          example: 111-11-1111
-        from:
-          type: string
-          description: "Inclusive lower bound for a range lookup (requires `to`; supported\
-            \ only on range-enabled, non-sensitive fields). Mutually exclusive with\
-            \ `value` and `prefix`."
-          example: 2024-01-01
-        to:
-          type: string
-          description: Inclusive upper bound for a range lookup (requires `from`).
-          example: 2024-12-31
-        prefix:
-          type: string
-          description: Prefix to match (supported only on range-enabled string fields).
-            Mutually exclusive with `value` and `from`/`to`.
-          example: team-
-        startFrom:
-          type: string
-          description: Pagination cursor — pass the `nextCursor` returned by the previous
-            page.
-          example: 550e8400-e29b-41d4-a716-446655440000
-        limit:
-          maximum: 100
-          minimum: 1
-          type: integer
-          description: Maximum number of results to return per page (1–100; defaults
-            to 20).
-          format: int32
-          example: 20
-          default: 20
-        order:
-          type: string
-          description: "Sort direction for the returned results: `asc` (default) or\
-            \ `desc`."
-          example: asc
-          default: asc
-          enum:
-          - asc
-          - desc
-      description: "Request body for an identity lookup (user, organization, or client).\
-        \ Carries the lookup value in the body so a sensitive field's value never\
-        \ travels in the URL query string. Provide exactly one lookup mode: `value`\
-        \ (exact match), `from` plus `to` (range), or `prefix`."
     DocumentResponse:
       type: object
       properties:
@@ -7144,33 +6742,25 @@ components:
           description: The owning user — the Vectros-assigned UUID of a user in your
             account.
           example: 550e8400-e29b-41d4-a716-446655440000
-        orgId:
-          type: string
-          description: The owning organization — the Vectros-assigned UUID of an organization
-            in your account.
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        clientId:
-          type: string
-          description: The associated client — the Vectros-assigned UUID of a client
-            in your account.
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         scopes:
           type: array
-          description: The document's scope ownership as canonical `namespace:value`
-            entries (at most 2). `org:` and `client:` entries mirror the `orgId` and
-            `clientId` fields; any other namespace is a custom scope attached at creation.
-            Empty for a document owned by a user alone (or unowned). Filter lists
-            by these values with `?scope=`.
+          description: "The document's scope ownership as canonical `namespace:value`\
+            \ entries (at most 2). `org` and `client` are built-in namespaces; any\
+            \ other is a custom scope you define. Set at creation, either explicitly\
+            \ or automatically from the calling token's identity. Empty for a document\
+            \ owned by a user alone (or unowned). Filter lists by these values with\
+            \ `?scope=`."
           example:
           - org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
           - group:eng-team
           items:
             type: string
-            description: The document's scope ownership as canonical `namespace:value`
-              entries (at most 2). `org:` and `client:` entries mirror the `orgId`
-              and `clientId` fields; any other namespace is a custom scope attached
-              at creation. Empty for a document owned by a user alone (or unowned).
-              Filter lists by these values with `?scope=`.
+            description: "The document's scope ownership as canonical `namespace:value`\
+              \ entries (at most 2). `org` and `client` are built-in namespaces; any\
+              \ other is a custom scope you define. Set at creation, either explicitly\
+              \ or automatically from the calling token's identity. Empty for a document\
+              \ owned by a user alone (or unowned). Filter lists by these values with\
+              \ `?scope=`."
             example: "[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\",\"group:eng-team\"\
               ]"
         fileType:
@@ -7270,31 +6860,19 @@ components:
             \ With a scoped token, must match the token's identity claim (if set)\
             \ or fall within its data scope."
           example: 550e8400-e29b-41d4-a716-446655440000
-        orgId:
-          type: string
-          description: "Owning organization ID — the Vectros-assigned UUID of an organization\
-            \ in your account. Optional. With an API key, sets the document's owning\
-            \ organization explicitly. With a scoped token, must match the token's\
-            \ identity claim (if set) or fall within its data scope."
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        clientId:
-          type: string
-          description: "Associated client ID — the Vectros-assigned UUID of a client\
-            \ in your account. Optional. With an API key, sets the document's client\
-            \ explicitly. With a scoped token, must match the token's identity claim\
-            \ (if set) or fall within its data scope."
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         scopes:
           type: array
           description: "The document's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-            , \"group:eng-team\"]`. `org:` and `client:` entries are equivalent to\
-            \ the `orgId` and `clientId` fields; other namespaces are custom scopes\
-            \ you define (lowercase, 2-32 chars). When supplied, this is the document's\
-            \ COMPLETE scope declaration: for a token that stamps identity, entries\
-            \ must match the token's identity values, and an empty array creates a\
-            \ document owned by the calling user alone (the private tier). Omit the\
-            \ field to inherit the token's full identity — the default. Filter lists\
+            , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
+            \ are custom scopes you define (lowercase, 2-32 chars). Resolve a namespace's\
+            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            \ When supplied, this is the document's COMPLETE scope declaration: for\
+            \ a token that stamps identity, entries must match the token's identity\
+            \ values, and an empty array creates a document owned by the calling user\
+            \ alone (the private tier). Omit the field to inherit the token's full\
+            \ identity — the default. On update, omit to leave ownership unchanged,\
+            \ or supply the complete new selection (`[]` clears it). Filter lists\
             \ by these values with `?scope=`."
           example:
           - group:eng-team
@@ -7302,14 +6880,16 @@ components:
             type: string
             description: "The document's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-              , \"group:eng-team\"]`. `org:` and `client:` entries are equivalent\
-              \ to the `orgId` and `clientId` fields; other namespaces are custom\
-              \ scopes you define (lowercase, 2-32 chars). When supplied, this is\
-              \ the document's COMPLETE scope declaration: for a token that stamps\
-              \ identity, entries must match the token's identity values, and an empty\
-              \ array creates a document owned by the calling user alone (the private\
-              \ tier). Omit the field to inherit the token's full identity — the default.\
-              \ Filter lists by these values with `?scope=`."
+              , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
+              \ others are custom scopes you define (lowercase, 2-32 chars). Resolve\
+              \ a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+              \ When supplied, this is the document's COMPLETE scope declaration:\
+              \ for a token that stamps identity, entries must match the token's identity\
+              \ values, and an empty array creates a document owned by the calling\
+              \ user alone (the private tier). Omit the field to inherit the token's\
+              \ full identity — the default. On update, omit to leave ownership unchanged,\
+              \ or supply the complete new selection (`[]` clears it). Filter lists\
+              \ by these values with `?scope=`."
             example: "[\"group:eng-team\"]"
         externalId:
           type: string
@@ -7597,46 +7177,32 @@ components:
             \ With a scoped token, must match the token's identity claim (if set)\
             \ or fall within its data scope."
           example: 550e8400-e29b-41d4-a716-446655440000
-        orgId:
-          type: string
-          description: "Owning organization ID — the Vectros-assigned UUID of an organization\
-            \ in your account. Optional. With an API key, sets the document's owning\
-            \ organization explicitly. With a scoped token, must match the token's\
-            \ identity claim (if set) or fall within its data scope."
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        clientId:
-          type: string
-          description: "Associated client ID — the Vectros-assigned UUID of a client\
-            \ in your account. Optional. With an API key, sets the document's client\
-            \ explicitly. With a scoped token, must match the token's identity claim\
-            \ (if set) or fall within its data scope."
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         scopes:
           type: array
           description: "The document's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-            , \"group:eng-team\"]`. `org:` and `client:` entries are equivalent to\
-            \ the `orgId` and `clientId` fields; other namespaces are custom scopes\
-            \ you define (lowercase, 2-32 chars). When supplied, this is the document's\
-            \ COMPLETE scope declaration: for a token that stamps identity, entries\
-            \ must match the token's identity values, and an empty array creates a\
-            \ document owned by the calling user alone (the private tier). Omit the\
-            \ field to inherit the token's full identity — the default. Filter lists\
-            \ by these values with `?scope=`."
+            , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
+            \ are custom scopes you define (lowercase, 2-32 chars). Resolve a namespace's\
+            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            \ When supplied, this is the document's COMPLETE scope declaration: for\
+            \ a token that stamps identity, entries must match the token's identity\
+            \ values, and an empty array creates a document owned by the calling user\
+            \ alone (the private tier). Omit the field to inherit the token's full\
+            \ identity — the default. Filter lists by these values with `?scope=`."
           example:
           - group:eng-team
           items:
             type: string
             description: "The document's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-              , \"group:eng-team\"]`. `org:` and `client:` entries are equivalent\
-              \ to the `orgId` and `clientId` fields; other namespaces are custom\
-              \ scopes you define (lowercase, 2-32 chars). When supplied, this is\
-              \ the document's COMPLETE scope declaration: for a token that stamps\
-              \ identity, entries must match the token's identity values, and an empty\
-              \ array creates a document owned by the calling user alone (the private\
-              \ tier). Omit the field to inherit the token's full identity — the default.\
-              \ Filter lists by these values with `?scope=`."
+              , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
+              \ others are custom scopes you define (lowercase, 2-32 chars). Resolve\
+              \ a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+              \ When supplied, this is the document's COMPLETE scope declaration:\
+              \ for a token that stamps identity, entries must match the token's identity\
+              \ values, and an empty array creates a document owned by the calling\
+              \ user alone (the private tier). Omit the field to inherit the token's\
+              \ full identity — the default. Filter lists by these values with `?scope=`."
             example: "[\"group:eng-team\"]"
         externalId:
           type: string
@@ -7647,6 +7213,226 @@ components:
             \ key other records use to reference this one. Max 256 characters."
           example: intake-doc-2024-0042
       description: Request body for initiating a file upload via a presigned S3 URL.
+    EntityResponse:
+      type: object
+      properties:
+        created:
+          type: boolean
+          description: "Whether this call created a new entity. True when a new entity\
+            \ was created; false when an entity with the same `externalId` already\
+            \ existed and was returned unchanged (idempotent create) or updated (when\
+            \ `?upsert=true`). Present only on the create response; absent on reads.\
+            \ The HTTP status mirrors it — 201 when created, 200 when an existing\
+            \ entity was returned."
+          example: true
+        id:
+          type: string
+          description: The Vectros-assigned ID (UUID) for this entity.
+          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
+        namespace:
+          type: string
+          description: The namespace this entity belongs to.
+          example: team
+        externalId:
+          type: string
+          description: "Your own identifier for this entity, as supplied when it was\
+            \ created."
+          example: team_eng_platform
+        name:
+          type: string
+          description: Human-readable name of the entity.
+          example: Platform Engineering
+        status:
+          type: string
+          description: "Lifecycle status of the entity: `ACTIVE` or `SUSPENDED`."
+          example: ACTIVE
+        scopes:
+          type: array
+          description: "The entity's effective scopes: its own reference (`<namespace>:<id>`)\
+            \ followed by its parent edges. Use these values to reference the entity\
+            \ as an owner elsewhere."
+          example:
+          - team:6ba7b810-9dad-11d1-80b4-00c04fd430c8
+          - org:550e8400-e29b-41d4-a716-446655440000
+          items:
+            type: string
+            description: "The entity's effective scopes: its own reference (`<namespace>:<id>`)\
+              \ followed by its parent edges. Use these values to reference the entity\
+              \ as an owner elsewhere."
+            example: "[\"team:6ba7b810-9dad-11d1-80b4-00c04fd430c8\",\"org:550e8400-e29b-41d4-a716-446655440000\"\
+              ]"
+        payload:
+          type: object
+          additionalProperties: true
+          description: Free-form key-value attributes stored with the entity.
+        schemaId:
+          type: string
+          description: "ID of the record schema governing this entity, or null if\
+            \ unbound."
+          example: 550e8400-e29b-41d4-a716-446655440000
+        schemaVersion:
+          type: integer
+          description: "The governing schema's version in effect when this entity\
+            \ was last written, or null when unbound."
+          format: int32
+          example: 3
+        createdAt:
+          type: string
+          description: "Timestamp when the entity was created, as an ISO-8601 UTC\
+            \ timestamp."
+          example: 2024-01-15T09:30:00Z
+      description: An identity entity in your account — a namespaced organizational
+        unit you define and control.
+    EntityRequest:
+      required:
+      - externalId
+      type: object
+      properties:
+        externalId:
+          type: string
+          description: "Your own unique identifier for this entity, unique within\
+            \ its namespace. Used for idempotent create: if an entity with this `externalId`\
+            \ already exists in the namespace, it is returned instead of creating\
+            \ a duplicate."
+          example: team_eng_platform
+        name:
+          type: string
+          description: Human-readable name for the entity.
+          example: Platform Engineering
+        status:
+          type: string
+          description: Lifecycle status of the entity. `ACTIVE` entities can be used
+            normally; `SUSPENDED` entities are retained but blocked from new operations.
+          example: ACTIVE
+          enum:
+          - ACTIVE
+          - SUSPENDED
+        payload:
+          type: object
+          additionalProperties: true
+          description: "Free-form key-value attributes to store with the entity. On\
+            \ update, the supplied object replaces the stored payload in full (it\
+            \ is not key-merged); omit it to leave the stored payload unchanged."
+          example:
+            region: us-east
+        schemaId:
+          type: string
+          description: "Optional ID of a record schema (created via `POST /v1/schemas`)\
+            \ that governs payload validation and lookup indexing for this entity,\
+            \ and must belong to your account."
+          example: 550e8400-e29b-41d4-a716-446655440000
+        scopes:
+          type: array
+          description: "The entity's parent ownership edges, each as `<namespace>:<value>`\
+            \ (for example `org:6ba7b810-...`). At most two parents, each in a DIFFERENT\
+            \ namespace from the entity's own. On update, providing `scopes` REPLACES\
+            \ the full set of parents; omit it to leave ownership unchanged. The entity's\
+            \ own reference (`<its namespace>:<its id>`) is accepted and ignored,\
+            \ so you can send back the `scopes` you read from a GET unchanged; any\
+            \ OTHER value in its own namespace is rejected, because a parent edge\
+            \ always crosses namespaces — a value in this entity's own namespace names\
+            \ a peer, not a parent."
+          example:
+          - org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
+          items:
+            type: string
+            description: "The entity's parent ownership edges, each as `<namespace>:<value>`\
+              \ (for example `org:6ba7b810-...`). At most two parents, each in a DIFFERENT\
+              \ namespace from the entity's own. On update, providing `scopes` REPLACES\
+              \ the full set of parents; omit it to leave ownership unchanged. The\
+              \ entity's own reference (`<its namespace>:<its id>`) is accepted and\
+              \ ignored, so you can send back the `scopes` you read from a GET unchanged;\
+              \ any OTHER value in its own namespace is rejected, because a parent\
+              \ edge always crosses namespaces — a value in this entity's own namespace\
+              \ names a peer, not a parent."
+            example: "[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]"
+      description: "Request body for creating or updating an identity entity. The\
+        \ namespace comes from the URL path. On update (PUT), omitted fields are preserved\
+        \ — a null value does not clear a field — and the `payload` object is replaced\
+        \ in full when supplied, rather than deep-merged."
+    EntityPage:
+      type: object
+      properties:
+        data:
+          type: array
+          description: "The items on this page, in the endpoint's natural order. Empty\
+            \ when there are no results."
+          items:
+            $ref: "#/components/schemas/EntityResponse"
+        nextCursor:
+          type: string
+          description: An opaque cursor for the next page. Pass it back as the `startFrom`
+            query parameter to continue paging; null when there are no more results.
+            Treat it as opaque — do not parse or construct it.
+          nullable: true
+          example: 550e8400-e29b-41d4-a716-446655440000
+      description: "A page of identity entities as a `{data, nextCursor}` envelope.\
+        \ `nextCursor` is an opaque cursor — pass it back as `startFrom` to fetch\
+        \ the next page, or null when no more pages remain."
+    IdentityLookupRequest:
+      required:
+      - field
+      - type
+      type: object
+      properties:
+        type:
+          type: string
+          description: "The identity schema type whose lookup fields you are querying\
+            \ (for example, `person_v1`)."
+          example: person_v1
+        field:
+          type: string
+          description: "Name of the lookup field declared on the schema. For a field\
+            \ marked sensitive, this body variant is required (the GET variant rejects\
+            \ looking up by a sensitive value)."
+          example: ssn
+        value:
+          type: string
+          description: Exact value to match. Mutually exclusive with `from`/`to` and
+            `prefix`.
+          example: 111-11-1111
+        from:
+          type: string
+          description: "Inclusive lower bound for a range lookup (requires `to`; supported\
+            \ only on range-enabled, non-sensitive fields). Mutually exclusive with\
+            \ `value` and `prefix`."
+          example: 2024-01-01
+        to:
+          type: string
+          description: Inclusive upper bound for a range lookup (requires `from`).
+          example: 2024-12-31
+        prefix:
+          type: string
+          description: Prefix to match (supported only on range-enabled string fields).
+            Mutually exclusive with `value` and `from`/`to`.
+          example: team-
+        startFrom:
+          type: string
+          description: Pagination cursor — pass the `nextCursor` returned by the previous
+            page.
+          example: 550e8400-e29b-41d4-a716-446655440000
+        limit:
+          maximum: 100
+          minimum: 1
+          type: integer
+          description: Maximum number of results to return per page (1–100; defaults
+            to 20).
+          format: int32
+          example: 20
+          default: 20
+        order:
+          type: string
+          description: "Sort direction for the returned results: `asc` (default) or\
+            \ `desc`."
+          example: asc
+          default: asc
+          enum:
+          - asc
+          - desc
+      description: "Request body for an identity lookup (user, organization, or client).\
+        \ Carries the lookup value in the body so a sensitive field's value never\
+        \ travels in the URL query string. Provide exactly one lookup mode: `value`\
+        \ (exact match), `from` plus `to` (range), or `prefix`."
     ErasureCertificate:
       type: object
       properties:
@@ -7743,13 +7529,9 @@ components:
           - failed
         subjectType:
           type: string
-          description: "The kind of subject that was erased (`user`, `client`, or\
-            \ `org`), echoed back from your request."
+          description: "The kind of subject that was erased (`user`, or an ownership\
+            \ namespace such as `org` or `client`), echoed back from your request."
           example: user
-          enum:
-          - user
-          - client
-          - org
         subjectId:
           type: string
           description: "The resolved platform id of the erased subject, echoed back\
@@ -7782,17 +7564,15 @@ components:
       properties:
         subjectType:
           type: string
-          description: "The kind of end-subject to erase: `user`, `client`, or `org`."
+          description: "The kind of end-subject to erase: `user` for a person, or\
+            \ an ownership namespace such as `org` or `client` — including a custom\
+            \ namespace you have defined."
           example: user
-          enum:
-          - user
-          - client
-          - org
         subjectId:
           type: string
-          description: "The platform id of the subject to erase (the userId, clientId,\
-            \ or orgId returned when the subject was created). Provide exactly one\
-            \ of `subjectId` or `externalId`."
+          description: The platform id of the subject to erase (the Vectros-assigned
+            id returned when the subject was created). Provide exactly one of `subjectId`
+            or `externalId`.
           example: 550e8400-e29b-41d4-a716-446655440000
         externalId:
           type: string
@@ -7905,12 +7685,9 @@ components:
         subjectType:
           type: string
           description: "For a `subject`-scoped export, the kind of subject that was\
-            \ exported (echoed back). Null for a `tenant`-scoped export."
+            \ exported — `user`, or an ownership namespace such as `org` or `client`\
+            \ (echoed back). Null for a `tenant`-scoped export."
           example: user
-          enum:
-          - user
-          - client
-          - org
         subjectId:
           type: string
           description: "For a `subject`-scoped export, the resolved platform id of\
@@ -7965,13 +7742,10 @@ components:
           - subject
         subjectType:
           type: string
-          description: "The kind of subject to export: `user`, `client`, or `org`.\
-            \ Required only when `scope` is `subject`."
+          description: "The kind of subject to export: `user` for a person, or an\
+            \ ownership namespace such as `org` or `client` — including a custom namespace\
+            \ you have defined. Required only when `scope` is `subject`."
           example: user
-          enum:
-          - user
-          - client
-          - org
         subjectId:
           type: string
           description: The platform id of the subject to export. Used only when `scope`
@@ -8060,33 +7834,23 @@ components:
             UUID of a user in your account. Null if the folder is not owned by a specific
             user.
           example: 550e8400-e29b-41d4-a716-446655440000
-        orgId:
-          type: string
-          description: ID of the organization that owns this folder — the Vectros-assigned
-            UUID of an organization in your account. Null if the folder is not owned
-            by a specific organization.
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        clientId:
-          type: string
-          description: ID of the client associated with this folder — the Vectros-assigned
-            UUID of a client in your account. Null if the folder is not associated
-            with a specific client.
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         scopes:
           type: array
-          description: The folder's scope ownership as canonical `namespace:value`
-            entries (at most 2). `org:` and `client:` entries mirror the `orgId` and
-            `clientId` fields; any other namespace is a custom scope attached at creation.
-            Empty for a folder owned by a user alone (or unowned).
+          description: "The folder's scope ownership as canonical `namespace:value`\
+            \ entries (at most 2). `org` and `client` are built-in namespaces; any\
+            \ other is a custom scope you define. Set at creation, either explicitly\
+            \ or automatically from the calling token's identity. Empty for a folder\
+            \ owned by a user alone (or unowned)."
           example:
           - org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
           - group:eng-team
           items:
             type: string
-            description: The folder's scope ownership as canonical `namespace:value`
-              entries (at most 2). `org:` and `client:` entries mirror the `orgId`
-              and `clientId` fields; any other namespace is a custom scope attached
-              at creation. Empty for a folder owned by a user alone (or unowned).
+            description: "The folder's scope ownership as canonical `namespace:value`\
+              \ entries (at most 2). `org` and `client` are built-in namespaces; any\
+              \ other is a custom scope you define. Set at creation, either explicitly\
+              \ or automatically from the calling token's identity. Empty for a folder\
+              \ owned by a user alone (or unowned)."
             example: "[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\",\"group:eng-team\"\
               ]"
         createdAt:
@@ -8142,46 +7906,34 @@ components:
             \ the token's identity claim (if one is set) or fall within the token's\
             \ data scope."
           example: 550e8400-e29b-41d4-a716-446655440000
-        orgId:
-          type: string
-          description: "Optional ID of the organization that should own this folder\
-            \ — the Vectros-assigned UUID of an organization in your account. With\
-            \ an API key, this sets the owning organization directly. With a scoped\
-            \ token, it must match the token's identity claim (if one is set) or fall\
-            \ within the token's data scope."
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        clientId:
-          type: string
-          description: "Optional ID of the client to associate with this folder —\
-            \ the Vectros-assigned UUID of a client in your account. With an API key,\
-            \ this sets the client directly. With a scoped token, it must match the\
-            \ token's identity claim (if one is set) or fall within the token's data\
-            \ scope."
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         scopes:
           type: array
           description: "The folder's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-            , \"group:eng-team\"]`. `org:` and `client:` entries are equivalent to\
-            \ the `orgId` and `clientId` fields; other namespaces are custom scopes\
-            \ you define (lowercase, 2-32 chars). When supplied, this is the folder's\
-            \ COMPLETE scope declaration: for a token that stamps identity, entries\
-            \ must match the token's identity values, and an empty array creates a\
-            \ folder owned by the calling user alone (the private tier). Omit the\
-            \ field to inherit the token's full identity — the default."
+            , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
+            \ are custom scopes you define (lowercase, 2-32 chars). Resolve a namespace's\
+            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            \ When supplied, this is the folder's COMPLETE scope declaration: for\
+            \ a token that stamps identity, entries must match the token's identity\
+            \ values, and an empty array creates a folder owned by the calling user\
+            \ alone (the private tier). Omit the field to inherit the token's full\
+            \ identity — the default. On update, omit to leave ownership unchanged,\
+            \ or supply the complete new selection (`[]` clears it)."
           example:
           - group:eng-team
           items:
             type: string
             description: "The folder's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-              , \"group:eng-team\"]`. `org:` and `client:` entries are equivalent\
-              \ to the `orgId` and `clientId` fields; other namespaces are custom\
-              \ scopes you define (lowercase, 2-32 chars). When supplied, this is\
-              \ the folder's COMPLETE scope declaration: for a token that stamps identity,\
-              \ entries must match the token's identity values, and an empty array\
-              \ creates a folder owned by the calling user alone (the private tier).\
-              \ Omit the field to inherit the token's full identity — the default."
+              , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
+              \ others are custom scopes you define (lowercase, 2-32 chars). Resolve\
+              \ a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+              \ When supplied, this is the folder's COMPLETE scope declaration: for\
+              \ a token that stamps identity, entries must match the token's identity\
+              \ values, and an empty array creates a folder owned by the calling user\
+              \ alone (the private tier). Omit the field to inherit the token's full\
+              \ identity — the default. On update, omit to leave ownership unchanged,\
+              \ or supply the complete new selection (`[]` clears it)."
             example: "[\"group:eng-team\"]"
         expectedVersion:
           type: integer
@@ -8328,112 +8080,37 @@ components:
           format: double
           example: 0.5
       description: Credit rates (per 1K input and output tokens) for a single region.
-    OrgResponse:
+    NamespaceResponse:
       type: object
       properties:
-        created:
+        namespace:
+          type: string
+          description: The registered namespace.
+          example: team
+        entityBacked:
           type: boolean
-          description: "Whether this call created a new organization. True when a\
-            \ new organization was created; false when an organization with the same\
-            \ `externalId` already existed and was returned unchanged (idempotent\
-            \ create) or updated (when `?upsert=true`). Present only on the create\
-            \ response (POST /v1/orgs); absent on reads. The HTTP status mirrors it\
-            \ — 201 when created, 200 when an existing organization was returned."
+          description: Whether values in this namespace must resolve to an existing
+            identity entity (`true`) or are free-form strings (`false`).
           example: true
-        id:
+        reserved:
+          type: boolean
+          description: Whether this is a reserved built-in namespace (`org`/`client`).
+            Built-ins cannot be changed or deleted.
+          example: false
+        defaultSchemaId:
           type: string
-          description: The Vectros-assigned ID (UUID) for this organization. Use it
-            wherever you reference the organization elsewhere — for example as the
-            owner of a record or as a filter value when listing records.
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        externalId:
-          type: string
-          description: "Your own identifier for this organization, as supplied when\
-            \ it was created."
-          example: clinic_001
-        name:
-          type: string
-          description: Human-readable name of the organization.
-          example: Downtown Clinic
-        status:
-          type: string
-          description: "Lifecycle status of the organization: `ACTIVE` (usable normally)\
-            \ or `SUSPENDED` (retained but blocked from new operations)."
-          example: ACTIVE
-        payload:
-          type: object
-          additionalProperties: true
-          description: Free-form key-value attributes stored with the organization.
-        schemaId:
-          type: string
-          description: "ID of the record schema that governs payload validation and\
-            \ lookup indexing for this organization, or null if the organization is\
-            \ not bound to a schema."
+          description: "ID of the default record schema bound to entities in this\
+            \ namespace, or null."
           example: 550e8400-e29b-41d4-a716-446655440000
-        schemaVersion:
-          type: integer
-          description: The version of the governing schema in effect when this organization
-            was last written. The organization keeps the schema version it was stamped
-            with even after the schema is later edited. Null when the organization
-            is not bound to a schema.
-          format: int32
-          example: 3
         createdAt:
           type: string
-          description: "Timestamp when the organization was created, as an ISO-8601\
-            \ UTC timestamp."
+          description: "Timestamp when the namespace was registered, as an ISO-8601\
+            \ UTC timestamp. Absent for the reserved built-ins."
           example: 2024-01-15T09:30:00Z
-      description: An organization in your account — an organizational unit you define
-        and control.
-    OrgRequest:
-      required:
-      - externalId
-      type: object
-      properties:
-        externalId:
-          type: string
-          description: "Your own unique identifier for this organization. Used for\
-            \ idempotent upsert: if an organization with this `externalId` already\
-            \ exists, it is returned instead of creating a duplicate."
-          example: clinic_001
-        name:
-          type: string
-          description: Human-readable name for the organization.
-          example: Downtown Clinic
-        status:
-          type: string
-          description: Lifecycle status of the organization. `ACTIVE` organizations
-            can be used normally; `SUSPENDED` organizations are retained but blocked
-            from new operations.
-          example: ACTIVE
-          enum:
-          - ACTIVE
-          - SUSPENDED
-        payload:
-          type: object
-          additionalProperties: true
-          description: "Free-form key-value attributes to store with the organization\
-            \ — use it to attach additional data from your own system. On update,\
-            \ the supplied object replaces the stored payload in full (it is not key-merged);\
-            \ omit it to leave the stored payload unchanged."
-          example:
-            region: northeast
-            tier: enterprise
-        schemaId:
-          type: string
-          description: "Optional ID of a record schema (created via `POST /v1/schemas`)\
-            \ that governs payload validation and lookup indexing for this organization,\
-            \ and must belong to your account. When set, the payload is validated\
-            \ against the schema on save and the schema's declared lookup fields become\
-            \ queryable via `GET /v1/orgs?type=...&field=...&value=...`; when omitted,\
-            \ the payload is free-form and no lookup fields are indexed. Once set,\
-            \ this reference cannot currently be cleared."
-          example: 550e8400-e29b-41d4-a716-446655440000
-      description: "Request body for creating or updating an organization. On update\
-        \ (PUT), omitted fields are preserved — a null value does not clear a field\
-        \ — and the `payload` object is replaced in full when supplied, rather than\
-        \ deep-merged."
-    OrgPage:
+      description: A scope-namespace registration — declares whether values in the
+        namespace resolve to identity entities. The reserved namespaces `org` and
+        `client` are always present as built-ins.
+    NamespacePage:
       type: object
       properties:
         data:
@@ -8441,7 +8118,7 @@ components:
           description: "The items on this page, in the endpoint's natural order. Empty\
             \ when there are no results."
           items:
-            $ref: "#/components/schemas/OrgResponse"
+            $ref: "#/components/schemas/NamespaceResponse"
         nextCursor:
           type: string
           description: An opaque cursor for the next page. Pass it back as the `startFrom`
@@ -8449,9 +8126,42 @@ components:
             Treat it as opaque — do not parse or construct it.
           nullable: true
           example: 550e8400-e29b-41d4-a716-446655440000
-      description: "A page of organizations as a `{data, nextCursor}` envelope. `nextCursor`\
-        \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
-        \ or null when no more pages remain."
+      description: "A page of scope-namespace registrations as a `{data, nextCursor}`\
+        \ envelope. `nextCursor` is an opaque cursor — pass it back as `startFrom`\
+        \ to fetch the next page, or null when no more pages remain."
+    NamespaceRequest:
+      required:
+      - namespace
+      type: object
+      properties:
+        namespace:
+          type: string
+          description: "The namespace to register: 2-32 characters, a lowercase letter\
+            \ first, then lowercase letters, digits, `_` or `-`. The reserved names\
+            \ `org` and `client` are built in and cannot be registered, changed, or\
+            \ deleted. Required on registration; on update it must match the path\
+            \ and is otherwise ignored (the namespace is immutable)."
+          example: team
+        entityBacked:
+          type: boolean
+          description: "When `true`, every `scope:<namespace>` value in this namespace\
+            \ must resolve to an existing identity entity of the same account and\
+            \ namespace (create entities via `POST /v1/entities/{namespace}`), and\
+            \ the namespace gains the full identity-entity surface — list its entities,\
+            \ look them up by schema field, and filter other resources by them as\
+            \ a parent. When `false` (the default), values in this namespace are free-form\
+            \ strings validated by grammar only."
+          example: true
+          default: false
+        defaultSchemaId:
+          type: string
+          description: Optional ID of a record schema (created via `POST /v1/schemas`)
+            bound as the default governing schema for entities created in this namespace.
+            Must belong to your account.
+          example: 550e8400-e29b-41d4-a716-446655440000
+      description: Request body for registering or updating a scope namespace. The
+        `namespace` is set on registration and cannot be changed afterwards; PUT updates
+        only `entityBacked` and `defaultSchemaId`.
     DataScope:
       type: object
       properties:
@@ -8460,13 +8170,24 @@ components:
           description: Bound user id. The credential can only access records owned
             by this user.
           example: user_456
-        orgId:
-          type: string
-          description: Bound org id. The credential can only access records owned
-            by this org.
-          example: org_789
-      description: "Identity binding for a scoped key. `userId`, `orgId`, or both\
-        \ may be present."
+        scopes:
+          type: array
+          description: "Bound scope values, as `namespace:value` entries — for example\
+            \ `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]`. The credential can\
+            \ only access records carrying these values. `org` and `client` are built-in\
+            \ namespaces; others are custom scopes you define."
+          example:
+          - org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
+          items:
+            type: string
+            description: "Bound scope values, as `namespace:value` entries — for example\
+              \ `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]`. The credential can\
+              \ only access records carrying these values. `org` and `client` are\
+              \ built-in namespaces; others are custom scopes you define."
+            example: "[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]"
+      description: "Identity binding for a scoped key: the user it acts as, the scope\
+        \ values it is bound to, or both. Either field is omitted when the credential\
+        \ is not bound on that dimension."
     PingResponse:
       required:
       - environment
@@ -8650,35 +8371,25 @@ components:
             automatically from the calling token's identity when the token carries
             a user identity.
           example: 550e8400-e29b-41d4-a716-446655440000
-        orgId:
-          type: string
-          description: Identifier of the owning organization (a Vectros-assigned UUID).
-            Set automatically from the calling token's identity when the token carries
-            an organization identity.
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        clientId:
-          type: string
-          description: Identifier of the associated client (a Vectros-assigned UUID).
-            Set automatically from the calling token's identity when the token carries
-            a client identity.
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         scopes:
           type: array
-          description: The record's scope ownership as canonical `namespace:value`
-            entries (at most 2). `org:` and `client:` entries mirror the `orgId` and
-            `clientId` fields; any other namespace is a custom scope attached at creation.
-            Empty for a record owned by a user alone (or unowned). Filter lists by
-            these values with `?scope=`.
+          description: "The record's scope ownership as canonical `namespace:value`\
+            \ entries (at most 2). `org` and `client` are built-in namespaces; any\
+            \ other is a custom scope you define. Set at creation, either explicitly\
+            \ or automatically from the calling token's identity. Empty for a record\
+            \ owned by a user alone (or unowned). Filter lists by these values with\
+            \ `?scope=`."
           example:
           - org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
           - group:eng-team
           items:
             type: string
-            description: The record's scope ownership as canonical `namespace:value`
-              entries (at most 2). `org:` and `client:` entries mirror the `orgId`
-              and `clientId` fields; any other namespace is a custom scope attached
-              at creation. Empty for a record owned by a user alone (or unowned).
-              Filter lists by these values with `?scope=`.
+            description: "The record's scope ownership as canonical `namespace:value`\
+              \ entries (at most 2). `org` and `client` are built-in namespaces; any\
+              \ other is a custom scope you define. Set at creation, either explicitly\
+              \ or automatically from the calling token's identity. Empty for a record\
+              \ owned by a user alone (or unowned). Filter lists by these values with\
+              \ `?scope=`."
             example: "[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\",\"group:eng-team\"\
               ]"
         indexStatus:
@@ -8975,31 +8686,19 @@ components:
             \ the calling token's identity. Use `GET /v1/users?externalId=` to resolve\
             \ the UUID from your own identifier."
           example: 550e8400-e29b-41d4-a716-446655440000
-        orgId:
-          type: string
-          description: "Identifier of the owning organization — the Vectros-assigned\
-            \ UUID of an organization in your account. Optional, and may be set automatically\
-            \ from the calling token's identity. Use `GET /v1/orgs?externalId=` to\
-            \ resolve the UUID from your own identifier."
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        clientId:
-          type: string
-          description: "Identifier of the associated client — the Vectros-assigned\
-            \ UUID of a client in your account. Optional, and may be set automatically\
-            \ from the calling token's identity. Use `GET /v1/clients?externalId=`\
-            \ to resolve the UUID from your own identifier."
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         scopes:
           type: array
           description: "The record's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-            , \"group:eng-team\"]`. `org:` and `client:` entries are equivalent to\
-            \ the `orgId` and `clientId` fields; other namespaces are custom scopes\
-            \ you define (lowercase, 2-32 chars). When supplied, this is the record's\
-            \ COMPLETE scope declaration: for a token that stamps identity, entries\
-            \ must match the token's identity values, and an empty array creates a\
-            \ record owned by the calling user alone (the private tier). Omit the\
-            \ field to inherit the token's full identity — the default. Filter lists\
+            , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
+            \ are custom scopes you define (lowercase, 2-32 chars). Resolve a namespace's\
+            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            \ When supplied, this is the record's COMPLETE scope declaration: for\
+            \ a token that stamps identity, entries must match the token's identity\
+            \ values, and an empty array creates a record owned by the calling user\
+            \ alone (the private tier). Omit the field to inherit the token's full\
+            \ identity — the default. On update, omit to leave ownership unchanged,\
+            \ or supply the complete new selection (`[]` clears it). Filter lists\
             \ by these values with `?scope=`."
           example:
           - group:eng-team
@@ -9007,14 +8706,16 @@ components:
             type: string
             description: "The record's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-              , \"group:eng-team\"]`. `org:` and `client:` entries are equivalent\
-              \ to the `orgId` and `clientId` fields; other namespaces are custom\
-              \ scopes you define (lowercase, 2-32 chars). When supplied, this is\
-              \ the record's COMPLETE scope declaration: for a token that stamps identity,\
-              \ entries must match the token's identity values, and an empty array\
-              \ creates a record owned by the calling user alone (the private tier).\
-              \ Omit the field to inherit the token's full identity — the default.\
-              \ Filter lists by these values with `?scope=`."
+              , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
+              \ others are custom scopes you define (lowercase, 2-32 chars). Resolve\
+              \ a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+              \ When supplied, this is the record's COMPLETE scope declaration: for\
+              \ a token that stamps identity, entries must match the token's identity\
+              \ values, and an empty array creates a record owned by the calling user\
+              \ alone (the private tier). Omit the field to inherit the token's full\
+              \ identity — the default. On update, omit to leave ownership unchanged,\
+              \ or supply the complete new selection (`[]` clears it). Filter lists\
+              \ by these values with `?scope=`."
             example: "[\"group:eng-team\"]"
         externalId:
           type: string
@@ -9237,17 +8938,14 @@ components:
           example: one
         targetSurface:
           type: string
-          description: "For a `reference` field: which surface the target lives on\
-            \ — record, document, user, org, or client. Required for reference fields.\
-            \ The same type name can exist on more than one surface, so this disambiguates\
-            \ which lookup resolves the reference."
+          description: "For a `reference` field: where the target lives — `record`,\
+            \ `document`, `user`, or the name of an identity namespace (`org`, `client`,\
+            \ or one you registered, such as `team`). Required for reference fields.\
+            \ The same type name can exist in more than one place, so this disambiguates\
+            \ which lookup resolves the reference. A namespace must already be registered\
+            \ and entity-backed, otherwise the schema is rejected — a reference that\
+            \ could never resolve fails when you define it, not on every write."
           example: record
-          enum:
-          - record
-          - document
-          - user
-          - org
-          - client
         sensitive:
           type: boolean
           description: "Marks the field as sensitive (PHI/PII). Sensitive fields are\
@@ -9418,27 +9116,29 @@ components:
           - NONE
         allowedSurfaces:
           type: array
-          description: "Which typed surfaces may bind this schema (record, document,\
-            \ user, org, or client). Always present (it is required at write time)."
+          description: "Which typed surfaces may bind this schema: `record`, `document`,\
+            \ `user`, or `entity` — identity entities in ANY namespace (`org`, `client`,\
+            \ or one you registered) bind under the single `entity` surface. Always\
+            \ present (it is required at write time)."
           example:
           - record
           items:
             type: string
-            description: "Which typed surfaces may bind this schema (record, document,\
-              \ user, org, or client). Always present (it is required at write time)."
+            description: "Which typed surfaces may bind this schema: `record`, `document`,\
+              \ `user`, or `entity` — identity entities in ANY namespace (`org`, `client`,\
+              \ or one you registered) bind under the single `entity` surface. Always\
+              \ present (it is required at write time)."
             example: "[\"record\"]"
             enum:
             - record
             - document
             - user
-            - org
-            - client
+            - entity
           enum:
           - record
           - document
           - user
-          - org
-          - client
+          - entity
         active:
           type: boolean
           description: Whether this schema is active.
@@ -9552,35 +9252,39 @@ components:
           - LARGE_PAYLOAD
         allowedSurfaces:
           type: array
-          description: "Which typed surfaces may bind this schema by its id: record,\
-            \ document, user, org, or client. Required and must be non-empty. A schema\
-            \ may list several surfaces (for a shared type usable on both records\
-            \ and documents). This drives surface-scoped schema listing (`GET /v1/schemas?surface=`)\
-            \ and is enforced at bind time — for example, a document cannot bind a\
-            \ record-only schema."
+          description: "Which typed surfaces may bind this schema by its id: `record`,\
+            \ `document`, `user`, or `entity`. Required and must be non-empty. Identity\
+            \ entities in ANY namespace — `org`, `client`, or one you registered,\
+            \ such as `team` — bind under the single `entity` surface; use the schema's\
+            \ `typeName` to distinguish them, not the surface. A schema may list several\
+            \ surfaces (for a shared type usable on both records and documents). This\
+            \ drives surface-scoped schema listing (`GET /v1/schemas?surface=`) and\
+            \ is enforced at bind time — for example, a document cannot bind a record-only\
+            \ schema."
           example:
           - record
           items:
             type: string
-            description: "Which typed surfaces may bind this schema by its id: record,\
-              \ document, user, org, or client. Required and must be non-empty. A\
-              \ schema may list several surfaces (for a shared type usable on both\
-              \ records and documents). This drives surface-scoped schema listing\
-              \ (`GET /v1/schemas?surface=`) and is enforced at bind time — for example,\
-              \ a document cannot bind a record-only schema."
+            description: "Which typed surfaces may bind this schema by its id: `record`,\
+              \ `document`, `user`, or `entity`. Required and must be non-empty. Identity\
+              \ entities in ANY namespace — `org`, `client`, or one you registered,\
+              \ such as `team` — bind under the single `entity` surface; use the schema's\
+              \ `typeName` to distinguish them, not the surface. A schema may list\
+              \ several surfaces (for a shared type usable on both records and documents).\
+              \ This drives surface-scoped schema listing (`GET /v1/schemas?surface=`)\
+              \ and is enforced at bind time — for example, a document cannot bind\
+              \ a record-only schema."
             example: "[\"record\"]"
             enum:
             - record
             - document
             - user
-            - org
-            - client
+            - entity
           enum:
           - record
           - document
           - user
-          - org
-          - client
+          - entity
         active:
           type: boolean
           description: Whether this schema is active. An inactive schema rejects creation
@@ -9594,20 +9298,34 @@ components:
             \ the user must match the token's identity claim (if set) or fall within\
             \ the token's data scope."
           example: 550e8400-e29b-41d4-a716-446655440000
-        orgId:
-          type: string
-          description: "Owning organization — the Vectros-assigned UUID of an organization\
-            \ in your account. Optional. With an API key, this sets the schema's owning\
-            \ organization explicitly. With a scoped token, it must match the token's\
-            \ identity claim (if set) or fall within the token's data scope."
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        clientId:
-          type: string
-          description: "Associated client — the Vectros-assigned UUID of a client\
-            \ in your account. Optional. With an API key, this sets the schema's client\
-            \ explicitly. With a scoped token, it must match the token's identity\
-            \ claim (if set) or fall within the token's data scope."
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
+        scopes:
+          type: array
+          description: "The schema's scope ownership, as `namespace:value` entries\
+            \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
+            , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
+            \ are custom scopes you define (lowercase, 2-32 chars). Resolve a namespace's\
+            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            \ Optional — omit for an account-wide shared schema. When supplied, this\
+            \ is the schema's COMPLETE scope declaration: for a token that stamps\
+            \ identity, entries must match the token's identity values. On update,\
+            \ omit to leave ownership unchanged, or supply the complete new selection\
+            \ (`[]` clears it). Filter lists by these values with `?scope=`."
+          example:
+          - group:eng-team
+          items:
+            type: string
+            description: "The schema's scope ownership, as `namespace:value` entries\
+              \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
+              , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
+              \ others are custom scopes you define (lowercase, 2-32 chars). Resolve\
+              \ a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+              \ Optional — omit for an account-wide shared schema. When supplied,\
+              \ this is the schema's COMPLETE scope declaration: for a token that\
+              \ stamps identity, entries must match the token's identity values. On\
+              \ update, omit to leave ownership unchanged, or supply the complete\
+              \ new selection (`[]` clears it). Filter lists by these values with\
+              \ `?scope=`."
+            example: "[\"group:eng-team\"]"
       description: "Request body for creating or updating a record schema. On update\
         \ (PUT), fields you omit are preserved and `typeName` cannot be changed; collection\
         \ fields (`fields`, `lookupFields`, `renderHints`, `capabilities`) are replaced\
@@ -9777,25 +9495,13 @@ components:
             UUID of a user in your account. Use `GET /v1/users?externalId=` to look
             up a user's ID from your own identifier.
           example: 550e8400-e29b-41d4-a716-446655440000
-        orgId:
-          type: string
-          description: Restrict results to content belonging to this organization
-            — the Vectros-assigned UUID of an organization in your account. Use `GET
-            /v1/orgs?externalId=` to look up an organization's ID from your own identifier.
-          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-        clientId:
-          type: string
-          description: Restrict results to content associated with this client — the
-            Vectros-assigned UUID of a client in your account. Use `GET /v1/clients?externalId=`
-            to look up a client's ID from your own identifier.
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         scope:
           type: string
           description: "Restrict results to content carrying this scope value, in\
-            \ `namespace:value` form — for example `group:eng-team`. `scope=org:<id>`\
-            \ and `scope=client:<id>` are equivalent to the `orgId` and `clientId`\
-            \ filters. Scope values are attached to records and documents at creation\
-            \ (the `scopes` field)."
+            \ `namespace:value` form — for example `group:eng-team`, `org:<id>`, or\
+            \ `client:<id>`. Scope values are attached to records and documents at\
+            \ creation (the `scopes` field). Use `GET /v1/entities/{namespace}?externalId=`\
+            \ to look up an entity's ID from your own identifier."
           example: group:eng-team
         filters:
           type: object
@@ -9980,8 +9686,14 @@ components:
             \ `resource:operations`, where `operations` is one of `r` (read), `c`\
             \ (create), `u` (update), `d` (delete), `crud` (all four), or a colon-separated\
             \ combination. For records you may append a type qualifier, e.g. `records:r:intake_form`.\
-            \ Valid resources are: `clients`, `orgs`, `users`, `documents`, `folders`,\
-            \ `records`, `schemas`, and `search`."
+            \ For identity entities the grammar is `entities:<verb>:<namespace>`,\
+            \ e.g. `entities:r:org` or `entities:c:client` (reserved namespaces `org`\
+            \ and `client`). Valid resources are: `entities`, `users`, `documents`,\
+            \ `folders`, `records`, `schemas`, and `search`. `namespaces` is deliberately\
+            \ not among them: reading the namespace registry is open to any credential,\
+            \ and registering, updating, or deleting a namespace requires a root API\
+            \ key — so a `namespaces:<verb>` entry would neither grant nor withhold\
+            \ anything."
           example:
           - records:crud
           - schemas:r
@@ -9992,8 +9704,14 @@ components:
               \ `resource:operations`, where `operations` is one of `r` (read), `c`\
               \ (create), `u` (update), `d` (delete), `crud` (all four), or a colon-separated\
               \ combination. For records you may append a type qualifier, e.g. `records:r:intake_form`.\
-              \ Valid resources are: `clients`, `orgs`, `users`, `documents`, `folders`,\
-              \ `records`, `schemas`, and `search`."
+              \ For identity entities the grammar is `entities:<verb>:<namespace>`,\
+              \ e.g. `entities:r:org` or `entities:c:client` (reserved namespaces\
+              \ `org` and `client`). Valid resources are: `entities`, `users`, `documents`,\
+              \ `folders`, `records`, `schemas`, and `search`. `namespaces` is deliberately\
+              \ not among them: reading the namespace registry is open to any credential,\
+              \ and registering, updating, or deleting a namespace requires a root\
+              \ API key — so a `namespaces:<verb>` entry would neither grant nor withhold\
+              \ anything."
             example: "[\"records:crud\",\"schemas:r\",\"search:r\"]"
         identity:
           type: object
@@ -10001,71 +9719,69 @@ components:
             type: string
             description: "Ownership fields automatically stamped onto resources created\
               \ with this token. Optional. Keys are ownership dimensions: `userId`,\
-              \ `orgId`, `clientId`, or a custom scope in canonical `scope:<namespace>`\
-              \ form (e.g. `scope:group`). Entity values must be Vectros UUIDs — look\
-              \ them up with `GET /v1/users`, `/v1/orgs`, or `/v1/clients`; custom-scope\
-              \ values are identifiers you define. The token holder cannot override\
-              \ these values when creating resources, but may narrow which of them\
-              \ stamp per create via the `scopes` request field."
-            example: "{\"userId\":\"550e8400-e29b-41d4-a716-446655440000\"}"
+              \ or any scope namespace in canonical `scope:<namespace>` form (e.g.\
+              \ `scope:org`, `scope:client`, `scope:group`). Entity values must be\
+              \ Vectros UUIDs — look them up with `GET /v1/users` or `GET /v1/entities/{namespace}`;\
+              \ custom-scope values are identifiers you define. The token holder cannot\
+              \ override these values when creating resources, but may narrow which\
+              \ of them stamp per create via the `scopes` request field."
+            example: "{\"userId\":\"550e8400-e29b-41d4-a716-446655440000\",\"scope:org\"\
+              :\"6ba7b810-9dad-11d1-80b4-00c04fd430c8\"}"
           description: "Ownership fields automatically stamped onto resources created\
             \ with this token. Optional. Keys are ownership dimensions: `userId`,\
-            \ `orgId`, `clientId`, or a custom scope in canonical `scope:<namespace>`\
-            \ form (e.g. `scope:group`). Entity values must be Vectros UUIDs — look\
-            \ them up with `GET /v1/users`, `/v1/orgs`, or `/v1/clients`; custom-scope\
-            \ values are identifiers you define. The token holder cannot override\
-            \ these values when creating resources, but may narrow which of them stamp\
-            \ per create via the `scopes` request field."
+            \ or any scope namespace in canonical `scope:<namespace>` form (e.g. `scope:org`,\
+            \ `scope:client`, `scope:group`). Entity values must be Vectros UUIDs\
+            \ — look them up with `GET /v1/users` or `GET /v1/entities/{namespace}`;\
+            \ custom-scope values are identifiers you define. The token holder cannot\
+            \ override these values when creating resources, but may narrow which\
+            \ of them stamp per create via the `scopes` request field."
           example:
             userId: 550e8400-e29b-41d4-a716-446655440000
+            scope:org: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
         dataScope:
           type: object
           additionalProperties:
             type: array
             description: "Restricts which records the token can access. Optional.\
-              \ Keys are ownership dimensions: `userId`, `orgId`, `clientId`, or a\
-              \ custom scope in canonical `scope:<namespace>` form (e.g. `scope:group`);\
-              \ values are arrays of permitted values — the token can only access\
-              \ records whose dimension matches one of these values. Every non-null\
-              \ entity UUID must be a real entity in your account; name each dimension\
-              \ once (`orgId` and `scope:org` are two spellings of the same dimension\
-              \ — responses and token claims always read back the canonical `scope:`\
-              \ form). Include a JSON `null` in the array (e.g. `[\"uuid\", null]`)\
-              \ to ALSO grant access to records with no value in THAT dimension —\
-              \ an explicit per-dimension sentinel, NOT a wildcard. To grant access\
-              \ regardless of value, omit the key from the data scope entirely."
+              \ Keys are ownership dimensions: `userId`, or any scope namespace in\
+              \ canonical `scope:<namespace>` form (e.g. `scope:org`, `scope:client`,\
+              \ `scope:group`); values are arrays of permitted values — the token\
+              \ can only access records whose dimension matches one of these values.\
+              \ Every non-null entity UUID must be a real entity in your account,\
+              \ and each dimension may be named only once. Include a JSON `null` in\
+              \ the array (e.g. `[\"uuid\", null]`) to ALSO grant access to records\
+              \ with no value in THAT dimension — an explicit per-dimension sentinel,\
+              \ NOT a wildcard. To grant access regardless of value, omit the key\
+              \ from the data scope entirely."
             example:
-              orgId:
+              scope:org:
               - 6ba7b810-9dad-11d1-80b4-00c04fd430c8
             items:
               type: string
               description: "Restricts which records the token can access. Optional.\
-                \ Keys are ownership dimensions: `userId`, `orgId`, `clientId`, or\
-                \ a custom scope in canonical `scope:<namespace>` form (e.g. `scope:group`);\
-                \ values are arrays of permitted values — the token can only access\
-                \ records whose dimension matches one of these values. Every non-null\
-                \ entity UUID must be a real entity in your account; name each dimension\
-                \ once (`orgId` and `scope:org` are two spellings of the same dimension\
-                \ — responses and token claims always read back the canonical `scope:`\
-                \ form). Include a JSON `null` in the array (e.g. `[\"uuid\", null]`)\
-                \ to ALSO grant access to records with no value in THAT dimension\
-                \ — an explicit per-dimension sentinel, NOT a wildcard. To grant access\
-                \ regardless of value, omit the key from the data scope entirely."
-              example: "{\"orgId\":[\"6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]}"
+                \ Keys are ownership dimensions: `userId`, or any scope namespace\
+                \ in canonical `scope:<namespace>` form (e.g. `scope:org`, `scope:client`,\
+                \ `scope:group`); values are arrays of permitted values — the token\
+                \ can only access records whose dimension matches one of these values.\
+                \ Every non-null entity UUID must be a real entity in your account,\
+                \ and each dimension may be named only once. Include a JSON `null`\
+                \ in the array (e.g. `[\"uuid\", null]`) to ALSO grant access to records\
+                \ with no value in THAT dimension — an explicit per-dimension sentinel,\
+                \ NOT a wildcard. To grant access regardless of value, omit the key\
+                \ from the data scope entirely."
+              example: "{\"scope:org\":[\"6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]}"
           description: "Restricts which records the token can access. Optional. Keys\
-            \ are ownership dimensions: `userId`, `orgId`, `clientId`, or a custom\
-            \ scope in canonical `scope:<namespace>` form (e.g. `scope:group`); values\
-            \ are arrays of permitted values — the token can only access records whose\
-            \ dimension matches one of these values. Every non-null entity UUID must\
-            \ be a real entity in your account; name each dimension once (`orgId`\
-            \ and `scope:org` are two spellings of the same dimension — responses\
-            \ and token claims always read back the canonical `scope:` form). Include\
-            \ a JSON `null` in the array (e.g. `[\"uuid\", null]`) to ALSO grant access\
-            \ to records with no value in THAT dimension — an explicit per-dimension\
-            \ sentinel, NOT a wildcard. To grant access regardless of value, omit\
-            \ the key from the data scope entirely."
+            \ are ownership dimensions: `userId`, or any scope namespace in canonical\
+            \ `scope:<namespace>` form (e.g. `scope:org`, `scope:client`, `scope:group`);\
+            \ values are arrays of permitted values — the token can only access records\
+            \ whose dimension matches one of these values. Every non-null entity UUID\
+            \ must be a real entity in your account, and each dimension may be named\
+            \ only once. Include a JSON `null` in the array (e.g. `[\"uuid\", null]`)\
+            \ to ALSO grant access to records with no value in THAT dimension — an\
+            \ explicit per-dimension sentinel, NOT a wildcard. To grant access regardless\
+            \ of value, omit the key from the data scope entirely."
           example:
-            orgId:
+            scope:org:
             - 6ba7b810-9dad-11d1-80b4-00c04fd430c8
       description: The actions and data a scoped token is allowed to access.
     TokenRequest:
@@ -10842,18 +10558,12 @@ components:
         userId:
           type: string
           description: Restrict retrieval to content owned by this user id.
-        orgId:
-          type: string
-          description: Restrict retrieval to content owned by this organization id.
-        clientId:
-          type: string
-          description: Restrict retrieval to content tagged with this client id.
         scope:
           type: string
           description: "Restrict retrieval to content carrying this scope value, in\
-            \ `namespace:value` form — for example `group:eng-team`. `scope=org:<id>`\
-            \ and `scope=client:<id>` are equivalent to the `orgId` and `clientId`\
-            \ filters."
+            \ `namespace:value` form — for example `group:eng-team`, `org:<id>`, or\
+            \ `client:<id>`. Resolve an entity's UUID from your own identifier via\
+            \ `GET /v1/entities/{namespace}?externalId=`."
           example: group:eng-team
         contentTypes:
           type: array
