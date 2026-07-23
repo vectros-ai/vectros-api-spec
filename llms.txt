@@ -11,9 +11,10 @@ MCP server), with a CLI for provisioning.
 The current surface spans: Documents and structured Records (with schema-defined
 indexing, lookup/range queries, and folders), hybrid Search (BM25 + vector, RRF
 fusion), grounded inference (chat, RAG, document-ask, model catalog), the
-Identity plane (users, orgs, clients), per-customer isolation with scoped keys
-and app-contexts, read-access logging, GDPR erasure and export, and billing/usage
-reporting.
+Identity plane (users, plus identity entities in any namespace — `org` and
+`client` are built in, and you can register your own), per-customer isolation
+with scoped keys and app-contexts, read-access logging, GDPR erasure and export,
+and billing/usage reporting.
 
 ## Recommended integration paths
 
@@ -75,6 +76,10 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
    - Unstructured data (PDFs, raw text): `POST /v1/documents`
    - Structured JSON data: define shape with `POST /v1/schemas`, then store and
      index with `POST /v1/records`
+   - Numeric range (64-bit): every JSON number in a payload or search body must fall
+     within the signed 64-bit integer range; an out-of-range number is rejected with
+     `400`. Send large whole-number identifiers (account ids, external keys) as STRINGS,
+     not numbers — a string field stores them exactly and supports exact-match lookup.
 
 2. **The File Upload Handshake (CRITICAL — never skip this):**
    - Files are NOT sent as multipart/form-data to the API.
@@ -94,20 +99,55 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
    - Always feed `contextText` to LLM prompts. Using `chunkText` alone causes
      context fragmentation and degrades answer quality.
 
-5. **Identity Idempotency:**
-   - `POST /v1/users`, `/v1/orgs`, `/v1/clients` require an `externalId`.
-   - POSTing with an existing `externalId` safely returns the existing record —
-     no 409 Conflict, safe to retry.
+5. **The Identity Plane (users + namespaced entities):**
+   - Two dimensions: users (`POST /v1/users`) and identity entities
+     (`POST /v1/entities/{namespace}`). `org` and `client` are built-in
+     namespaces — so an organization is `POST /v1/entities/org`. There are no
+     `/v1/orgs` or `/v1/clients` routes.
+   - Register your own namespaces (`team`, `project`, …) with
+     `POST /v1/namespaces` (`{"namespace":"team","entityBacked":true}`, root key
+     only). `entityBacked` defaults to `false` — a false/unregistered namespace
+     is a free-string scope value with no entities route, so set it `true` if you
+     want entities. Entity-backed values are then existence-checked on write.
+   - **Idempotency:** both require an `externalId`. POSTing with an existing
+     `externalId` safely returns the existing record — no 409 Conflict, safe to
+     retry. Pass `?upsert=true` on an entity create to overwrite instead — that
+     needs `entities:u:<namespace>` in addition to `entities:c:<namespace>`.
 
-6. **Async Indexing & Webhooks:**
+6. **Ownership is `scopes`, not `orgId`/`clientId`:**
+   - Records, documents, folders, and schemas carry `scopes` — an array of
+     `<namespace>:<value>` entries (e.g. `["org:<id>"]`), max two. There are no
+     `orgId`/`clientId` fields anywhere; sending them is a 400. On an identity
+     entity the same field holds its parents — max two, each in a namespace
+     DIFFERENT from the entity's own (a parent edge always crosses namespaces).
+   - Filter lists with `?scope=<namespace>:<value>` (one per query; pair with
+     `?userId=` for both dimensions). In search and the RAG `search` block, use
+     `"scope": "<namespace>:<value>"`.
+   - Bind a credential with `scope:<namespace>` keys in a token's
+     `dataScope`/`identity` and in an access profile's `identityOverrides`
+     (e.g. `{"dataScope":{"scope:org":["<id>", null]}}` — the `null` additively
+     grants tenant-level, owner-less rows). Reference the caller's own value
+     with `${{ self.scope.<namespace> }}`.
+   - Grant access with `entities:<verb>:<namespace>`, mirroring
+     `records:<verb>:<type>`.
+
+7. **Async Indexing & Webhooks:**
    - Document and record indexing is asynchronous. The resource is created
      immediately but `indexStatus` transitions PENDING_INDEX → INDEXED over seconds.
+     Indexing can also terminate in FAILED: a failed resource carries an
+     `indexFailure` object with a typed `code` (`SOURCE_UNAVAILABLE`,
+     `TEXT_INDEX_FAILED`, `EMBEDDING_FAILED`, `INDEXING_FAILED`,
+     `VECTOR_LIMIT_EXCEEDED`, `INTERNAL`). When polling, treat FAILED as terminal —
+     do not wait for INDEXED — and branch on `indexFailure.code`, not on message text.
    - Register webhooks to receive `document.indexed`, `document.failed`,
-     `record.indexed`, `record.failed` events.
-   - Webhook payloads are signed. Verify using the `X-Vectros-Signature` header
-     (Ed25519 or HMAC-SHA256 depending on your webhook configuration).
+     `record.indexed`, `record.failed` events. The envelope's `data` carries
+     `userId` and `scopes` when present — the same ownership spelling as REST — and,
+     on the `.failed` events, the `indexFailure` object described above.
+   - Webhook payloads are signed with HMAC-SHA256. Verify the
+     `X-Vectros-Signature` header (`sha256=<hex>`), computed over the literal
+     string `<X-Vectros-Timestamp>.<body>` keyed by the hex-decoded secret.
 
-7. **Pagination:**
+8. **Pagination:**
    - List, lookup, and version endpoints return a uniform cursor-paginated
      envelope: `{ data, nextCursor }`. Pass `nextCursor` back as the `startFrom`
      query param to fetch the next page; `null` means no more pages.

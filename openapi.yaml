@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.35.0"
+  version: "0.36.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -18,7 +18,7 @@ tags:
   - name: Folders
     description: Organize documents and records into folder hierarchies
   - name: Identity
-    description: Manage users, organizations, and clients
+    description: Manage users and namespaced identity entities
   - name: Inference
     description: Streaming LLM endpoints — chat, RAG, and per-document Q&A
   - name: Compliance
@@ -348,8 +348,10 @@ paths:
       - name: resource
         in: query
         description: "Filter by resource type. One of `documents`, `records`, `search`,\
-          \ `schemas`, `folders`, `clients`, `orgs`, `users`, `usage`, `auth`, `models`,\
-          \ `ping`, `rag`, `chat`, `ask`, `erasure-requests`, or `export`."
+          \ `schemas`, `folders`, `entities`, `namespaces`, `clients`, `orgs`, `users`,\
+          \ `usage`, `auth`, `models`, `ping`, `rag`, `chat`, `ask`, `erasure-requests`,\
+          \ or `export`. (`clients` and `orgs` match log rows written before the identity\
+          \ surfaces were folded into `entities`.)"
         schema:
           type: string
         example: documents
@@ -1368,7 +1370,10 @@ paths:
         \ status — 201 when created, 200 when an existing document was returned) tells\
         \ the two apart. To overwrite an existing document's content instead of returning\
         \ it unchanged, set `?upsert=true` (this also requires the `documents:u` scope).\
-        \ Requires the `documents:c` scope."
+        \ Requires the `documents:c` scope to create. Being returned the existing\
+        \ document on a collision is a read of that document's data and additionally\
+        \ requires the `documents:r` scope — a credential holding `documents:c` alone\
+        \ receives a `400` (\"already exists\") on collision instead of the document."
       operationId: ingestDocument
       parameters:
       - name: upsert
@@ -1410,14 +1415,21 @@ paths:
         "200":
           description: "A document with the same `externalId` already existed and\
             \ was returned (`created: false`) — unchanged for an idempotent create,\
-            \ or updated when `?upsert=true`."
+            \ or updated when `?upsert=true`. The plain (non-upsert) case additionally\
+            \ requires the `documents:r` scope."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/DocumentResponse"
         "400":
           description: "The request was invalid (for example, `text` is missing, or\
-            \ the payload failed schema validation)."
+            \ the payload failed schema validation); a document with the same `externalId`\
+            \ already exists but your credential lacks the `documents:r` scope needed\
+            \ to receive it, reported as an \"already exists\" error rather than the\
+            \ document; or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference` field's\
+            \ target type has more than one schema across different owners in this\
+            \ context, so the reference cannot be resolved. This endpoint has no way\
+            \ to select one owner's schema today; contact support if you hit this."
         "403":
           description: "Your API key or token lacks the `documents:c` scope required\
             \ to create a document (or, with `?upsert=true`, the `documents:u` scope\
@@ -1507,7 +1519,10 @@ paths:
                 $ref: "#/components/schemas/DocumentResponse"
         "400":
           description: "The request was invalid (for example, the payload failed schema\
-            \ validation)."
+            \ validation); or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference` field's\
+            \ target type has more than one schema across different owners in this\
+            \ context, so the reference cannot be resolved. This endpoint has no way\
+            \ to select one owner's schema today; contact support if you hit this."
         "404":
           description: "No document with this ID exists in your account, or it is\
             \ outside your access scope."
@@ -1728,6 +1743,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DocumentLookupPage"
+        "400":
+          description: "The request was invalid (for example, a missing `type` or\
+            \ `field`, or conflicting lookup modes); or (errorCode `AMBIGUOUS_RECORD_TYPE`)\
+            \ more than one owner in this context has defined a schema for `type`,\
+            \ so this endpoint cannot determine whether `field` is sensitive. This\
+            \ endpoint has no way to select one owner's schema today; contact support\
+            \ if you hit this."
       security:
         - BearerAuth: []
     post:
@@ -1756,7 +1778,11 @@ paths:
                 $ref: "#/components/schemas/DocumentLookupPage"
         "400":
           description: "The request was invalid (for example, a missing `type` or\
-            \ `field`, or conflicting lookup modes)."
+            \ `field`, or conflicting lookup modes); or (errorCode `AMBIGUOUS_RECORD_TYPE`)\
+            \ more than one owner in this context has defined a schema for `type`,\
+            \ so this endpoint cannot determine whether `field` is sensitive. This\
+            \ endpoint has no way to select one owner's schema today; contact support\
+            \ if you hit this."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -1931,7 +1957,10 @@ paths:
                 $ref: "#/components/schemas/FileUploadResponse"
         "400":
           description: "The request was invalid (for example, `fileName` or `fileType`\
-            \ is missing)."
+            \ is missing); or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference` field's\
+            \ target type has more than one schema across different owners in this\
+            \ context, so the reference cannot be resolved. This endpoint has no way\
+            \ to select one owner's schema today; contact support if you hit this."
         "403":
           description: "Your API key or token lacks the required scope: `documents:c`\
             \ to create a new document, or `documents:u` to re-upload over (or `?upsert`\
@@ -2078,7 +2107,10 @@ paths:
         \ instead of returning it unchanged, set `?upsert=true` (also requires the\
         \ `entities:u:<namespace>` scope). The namespace must be entity-backed (`org`/`client`,\
         \ or registered via `POST /v1/namespaces`). Requires the `entities:c:<namespace>`\
-        \ scope."
+        \ scope to create. Being returned the existing entity on a collision is a\
+        \ read of that entity's data and additionally requires the `entities:r:<namespace>`\
+        \ scope — a credential holding `entities:c:<namespace>` alone receives a `400`\
+        \ (\"already in use\") on collision instead of the entity."
       operationId: createEntity
       parameters:
       - name: namespace
@@ -2111,13 +2143,17 @@ paths:
                 $ref: "#/components/schemas/EntityResponse"
         "200":
           description: "An entity with the same `externalId` already existed and was\
-            \ returned (`created: false`)."
+            \ returned (`created: false`). The plain (non-upsert) case additionally\
+            \ requires the `entities:r:<namespace>` scope."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/EntityResponse"
         "400":
-          description: "The request was invalid, or the namespace is not entity-backed."
+          description: "The request was invalid, or the namespace is not entity-backed;\
+            \ or an entity with the same `externalId` already exists but your credential\
+            \ lacks the `entities:r:<namespace>` scope needed to receive it, reported\
+            \ as an \"already in use\" error rather than the entity."
         "403":
           description: Your credential lacks the required `entities` scope for this
             namespace.
@@ -2370,13 +2406,13 @@ paths:
       - Compliance
       summary: Submit an end-subject erasure request
       description: "Submits a right-to-erasure request for a single end-subject (a\
-        \ user, client, or organization). Erasure removes exactly the data the subject\
-        \ solely owns across the declared contexts, plus the subject's identity and\
-        \ lookup rows. It never touches another account's data and never cascades\
-        \ into another subject's data. The request is asynchronous: it returns 202\
-        \ with a `requestId`; poll `GET /v1/erasure-requests/{id}` until the job completes\
-        \ to obtain the completion certificate. Requires a root API key — a scoped\
-        \ credential is rejected with 403."
+        \ user, or an identity entity in any namespace). Erasure removes exactly the\
+        \ data the subject solely owns across the declared contexts, plus the subject's\
+        \ identity and lookup rows. It never touches another account's data and never\
+        \ cascades into another subject's data. The request is asynchronous: it returns\
+        \ 202 with a `requestId`; poll `GET /v1/erasure-requests/{id}` until the job\
+        \ completes to obtain the completion certificate. Requires a root API key\
+        \ — a scoped credential is rejected with 403."
       operationId: createErasureRequest
       requestBody:
         content:
@@ -2616,7 +2652,11 @@ paths:
         \ field (and the HTTP status — 201 when created, 200 when an existing folder\
         \ was returned) tells the two apart. To overwrite an existing folder's mutable\
         \ fields instead of returning it unchanged, set `?upsert=true` (this also\
-        \ requires the `folders:u` scope). Requires the `folders:c` scope."
+        \ requires the `folders:u` scope). Requires the `folders:c` scope to create.\
+        \ Being returned the existing folder on a collision is a read of that folder's\
+        \ data and additionally requires the `folders:r` scope — a credential holding\
+        \ `folders:c` alone receives a `400` (\"already exists\") on collision instead\
+        \ of the folder."
       operationId: createFolder
       parameters:
       - name: upsert
@@ -2647,14 +2687,18 @@ paths:
         "200":
           description: "A folder with the same slug already existed under the same\
             \ parent and was returned (`created: false`) — unchanged for an idempotent\
-            \ create, or with the request's mutable fields applied when `?upsert=true`."
+            \ create, or with the request's mutable fields applied when `?upsert=true`.\
+            \ The plain (non-upsert) case additionally requires the `folders:r` scope."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/FolderResponse"
         "400":
           description: "The request was invalid — for example, the folder name was\
-            \ missing or the supplied slug was malformed."
+            \ missing or the supplied slug was malformed; or a folder with the same\
+            \ slug already exists under the same parent but your credential lacks\
+            \ the `folders:r` scope needed to receive it, reported as an \"already\
+            \ exists\" error rather than the folder."
         "403":
           description: "Your API key or token lacks the `folders:c` scope required\
             \ to create a folder (or, with `?upsert=true`, the `folders:u` scope required\
@@ -3434,7 +3478,11 @@ paths:
         \ the HTTP status — 201 when created, 200 when an existing record was returned)\
         \ tells the two apart. To overwrite an existing record's content instead of\
         \ returning it unchanged, set `?upsert=true` (this also requires the `records:u:<type>`\
-        \ scope). Requires the `records:c:<type>` scope."
+        \ scope). Requires the `records:c:<type>` scope to create. Being returned\
+        \ the existing record on a collision is a read of that record's data and additionally\
+        \ requires the `records:r:<type>` scope — a credential holding `records:c:<type>`\
+        \ alone receives a `400` (\"already exists\") on collision instead of the\
+        \ record."
       operationId: createRecord
       parameters:
       - name: upsert
@@ -3496,7 +3544,8 @@ paths:
         "200":
           description: "A record with the same `externalId` already existed and was\
             \ returned (`created: false`) — unchanged for an idempotent create, or\
-            \ updated when `?upsert=true`."
+            \ updated when `?upsert=true`. The plain (non-upsert) case additionally\
+            \ requires the `records:r:<type>` scope."
           content:
             application/json:
               schema:
@@ -3504,7 +3553,16 @@ paths:
         "400":
           description: "The request is invalid — for example the payload fails schema\
             \ validation, the named type has no schema, or `typeName` and `schemaId`\
-            \ disagree."
+            \ disagree; a record with the same `externalId` already exists but your\
+            \ credential lacks the `records:r:<type>` scope needed to receive it,\
+            \ reported as an \"already exists\" error rather than the record; or (errorCode\
+            \ `AMBIGUOUS_RECORD_TYPE`) either you supplied `typeName` alone and more\
+            \ than one owner in this context has defined a schema with that name (pass\
+            \ `schemaId` instead, which always resolves to one specific schema), or\
+            \ a `reference` field's target type has more than one schema across different\
+            \ owners in this context, so the reference cannot be resolved (this endpoint\
+            \ has no way to select one owner's schema for a reference target today;\
+            \ contact support if you hit this)."
         "403":
           description: "Your API key or token lacks the `records:c:<type>` scope required\
             \ to create this record type (or, with `?upsert=true`, the `records:u:<type>`\
@@ -3605,8 +3663,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/RecordResponse"
         "400":
-          description: The request is invalid — for example the payload fails schema
-            validation.
+          description: "The request is invalid — for example the payload fails schema\
+            \ validation; or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference` field's\
+            \ target type has more than one schema across different owners in this\
+            \ context, so the reference cannot be resolved. This endpoint has no way\
+            \ to select one owner's schema for a reference target today; contact support\
+            \ if you hit this."
         "404":
           description: "No record with this ID exists in your account, or it is outside\
             \ your token's scope."
@@ -3850,7 +3912,11 @@ paths:
         "400":
           description: "The request is invalid — for example you supplied no lookup\
             \ mode or more than one, attempted a range or prefix lookup on a sensitive\
-            \ field, or used a prefix lookup on a non-string field."
+            \ field, used a prefix lookup on a non-string field, or (errorCode `AMBIGUOUS_RECORD_TYPE`)\
+            \ more than one owner in this context has defined a schema for `type`,\
+            \ so this endpoint cannot determine whether `field` is sensitive. This\
+            \ endpoint has no way to select one owner's schema today; contact support\
+            \ if you hit this."
       security:
         - BearerAuth: []
     post:
@@ -3882,7 +3948,11 @@ paths:
         "400":
           description: "The request is invalid — for example you supplied no lookup\
             \ mode or more than one, attempted a range or prefix lookup on a sensitive\
-            \ field, or used a prefix lookup on a non-string field."
+            \ field, used a prefix lookup on a non-string field, or (errorCode `AMBIGUOUS_RECORD_TYPE`)\
+            \ more than one owner in this context has defined a schema for `type`,\
+            \ so this endpoint cannot determine whether `field` is sensitive. This\
+            \ endpoint has no way to select one owner's schema today; contact support\
+            \ if you hit this."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -4024,7 +4094,11 @@ paths:
           \ Resolved in the calling context for record and document types; combine\
           \ with `surface=user` or `surface=entity` to resolve an account-wide identity\
           \ schema. Takes precedence over `userId`; a `scope` filter still applies,\
-          \ so a resolved schema outside that scope returns an empty page."
+          \ so a resolved schema outside that scope returns an empty page. A type\
+          \ name is unique per owner, not per context — if more than one owner in\
+          \ this context has defined a schema with this name, the request fails with\
+          \ `400 AMBIGUOUS_RECORD_TYPE` instead of guessing; resolve by `id` instead,\
+          \ or add `userId`/`scope` to narrow to one owner first."
         schema:
           type: string
         example: intake_form
@@ -4053,6 +4127,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SchemaPage"
+        "400":
+          description: "Ambiguous `recordType` (errorCode `AMBIGUOUS_RECORD_TYPE`):\
+            \ more than one schema in this context uses this type name, each under\
+            \ a different owner — a schema's `typeName` is unique per owner, not per\
+            \ context, so multiple owners may legitimately define the same one. Resolve\
+            \ the specific schema you want by `id` (`GET /v1/schemas/{id}`), or narrow\
+            \ with `userId`/`scope` first to find its owner."
       security:
         - BearerAuth: []
     post:
@@ -4065,9 +4146,12 @@ paths:
         \ than failing. The response's `created` field (and the HTTP status — 201\
         \ when created, 200 when an existing schema was returned) tells the two apart.\
         \ To reconcile an existing schema to the submitted shape instead of returning\
-        \ it unchanged, set `?upsert=true` (this also requires the `schemas:w` scope;\
+        \ it unchanged, set `?upsert=true` (this also requires the `schemas:u` scope;\
         \ only legal schema changes are applied — migration-locked changes are rejected).\
-        \ Requires the `schemas:w` scope."
+        \ Requires the `schemas:c` scope to create. Being returned the existing schema\
+        \ on a collision is a read of that schema's data and additionally requires\
+        \ the `schemas:r` scope — a credential holding `schemas:c` alone receives\
+        \ a `400` (\"already in use\") on collision instead of the schema."
       operationId: createSchema
       parameters:
       - name: upsert
@@ -4078,7 +4162,7 @@ paths:
           \ and migration-locked lookup attributes (`rangeEnabled`/`sortBy`/`sensitive`)\
           \ cannot be changed and a request to do so is rejected. A re-applied upsert\
           \ whose declared shape is unchanged is a no-op (no schema-version bump).\
-          \ Defaults to `false`. Requires the `schemas:w` scope."
+          \ Defaults to `false`. Requires the `schemas:u` scope."
         schema:
           type: boolean
           default: false
@@ -4123,17 +4207,22 @@ paths:
         "200":
           description: "A schema with the same `typeName` already existed and was\
             \ returned (`created: false`) — unchanged for an idempotent create, or\
-            \ reconciled when `?upsert=true`."
+            \ reconciled when `?upsert=true`. The plain (non-upsert) case additionally\
+            \ requires the `schemas:r` scope."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SchemaResponse"
         "400":
           description: "The request body failed validation, or (with `?upsert=true`)\
-            \ the reconcile attempted a migration-locked change."
+            \ the reconcile attempted a migration-locked change; or a schema with\
+            \ the same `typeName` already exists but your credential lacks the `schemas:r`\
+            \ scope needed to receive it, reported as an \"already in use\" error\
+            \ rather than the schema."
         "403":
-          description: Your API key or token lacks the `schemas:w` scope required
-            to create or reconcile this schema.
+          description: "Your API key or token lacks the `schemas:c` scope required\
+            \ to create a schema (or, with `?upsert=true`, the `schemas:u` scope required\
+            \ to reconcile it)."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -4186,7 +4275,7 @@ paths:
       description: "Updates a record schema. Fields you omit are preserved; `typeName`\
         \ is immutable and cannot be changed. Collection fields (`fields`, `lookupFields`,\
         \ `renderHints`, `capabilities`) are replaced in full when supplied. Requires\
-        \ the `schemas:w` scope."
+        \ the `schemas:u` scope."
       operationId: updateSchema
       parameters:
       - name: id
@@ -4236,7 +4325,7 @@ paths:
       summary: Delete a record schema
       description: "Permanently deletes a record schema. The request is refused with\
         \ 409 if records of this type still exist — delete those records first, since\
-        \ every record must reference a live schema. Requires the `schemas:w` scope."
+        \ every record must reference a live schema. Requires the `schemas:d` scope."
       operationId: deleteSchema
       parameters:
       - name: id
@@ -4363,10 +4452,10 @@ paths:
       - Auth
       summary: Mint a scoped bearer token for one of your end users
       description: "Creates a short-lived JWT bearer token restricted to specific\
-        \ actions and, optionally, to a particular user, organization, or client.\
-        \ Use this to hand a narrowly-scoped credential to a browser or downstream\
-        \ service so it never sees your root API key. Only callable with a root API\
-        \ key (`sk_*`)."
+        \ actions and, optionally, to a particular user or identity entity (in any\
+        \ namespace). Use this to hand a narrowly-scoped credential to a browser or\
+        \ downstream service so it never sees your root API key. Only callable with\
+        \ a root API key (`sk_*`)."
       operationId: mintToken
       requestBody:
         content:
@@ -4397,8 +4486,8 @@ paths:
                 token: st_eyJ...
                 expiresAt: 1705312200
         "400":
-          description: "Invalid request — for example, a missing scope, or a user,\
-            \ organization, or client ID that does not exist in your account."
+          description: "Invalid request — for example, a missing scope, or a user\
+            \ or identity-entity ID that does not exist in your account."
         "403":
           description: Only a root API key can mint scoped tokens.
         "429":
@@ -4536,7 +4625,10 @@ paths:
         \ user was returned) tells the two apart. To overwrite an existing user's\
         \ mutable fields (email, status, payload, schema binding) instead of returning\
         \ it unchanged, set `?upsert=true` (this also requires the `users:u` scope).\
-        \ Requires the `users:c` scope."
+        \ Requires the `users:c` scope to create. Being returned the existing user\
+        \ on a collision is a read of that user's data and additionally requires the\
+        \ `users:r` scope — a credential holding `users:c` alone receives a `400`\
+        \ (\"already exists\") on collision instead of the user."
       operationId: createUser
       parameters:
       - name: upsert
@@ -4565,14 +4657,18 @@ paths:
         "200":
           description: "A user with the same `externalId` already existed and was\
             \ returned (`created: false`) — unchanged for an idempotent create, or\
-            \ updated when `?upsert=true`."
+            \ updated when `?upsert=true`. The plain (non-upsert) case additionally\
+            \ requires the `users:r` scope."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserResponse"
         "400":
           description: "The request body failed validation (for example, `externalId`\
-            \ is missing or the payload does not match the bound schema)."
+            \ is missing or the payload does not match the bound schema); or a user\
+            \ with the same `externalId` already exists but your credential lacks\
+            \ the `users:r` scope needed to receive it, reported as an \"already exists\"\
+            \ error rather than the user."
         "403":
           description: "Your API key or token lacks the `users:c` scope required to\
             \ create a user (or, with `?upsert=true`, the `users:u` scope required\
@@ -5453,10 +5549,13 @@ components:
           example: POST
         resource:
           type: string
-          description: "Top-level resource the call targeted (one of `documents`,\
-            \ `records`, `search`, `schemas`, `folders`, `clients`, `orgs`, `users`,\
-            \ `usage`, `auth`, `models`, `ping`, `rag`, `chat`, `ask`, `erasure-requests`,\
-            \ or `export`), derived from the request path."
+          description: "Top-level resource the call targeted, derived from the request\
+            \ path — for example `documents`, `records`, `search`, `schemas`, `folders`,\
+            \ `entities`, `namespaces`, `users`, `usage`, `auth`, `models`, `ping`,\
+            \ `rag`, `chat`, `ask`, `erasure-requests`, or `export`. Rows may also\
+            \ carry values that are not filterable via the `resource` query parameter,\
+            \ and `clients`/`orgs` appear on rows written before those identity surfaces\
+            \ were folded into `entities`."
           example: records
         contextId:
           type: string
@@ -5487,6 +5586,25 @@ components:
           type: string
           description: Full request path.
           example: /v1/records/550e8400-e29b-41d4-a716-446655440000
+        requestId:
+          type: string
+          description: "Correlation id for this call. Quote it when contacting support\
+            \ so the call can be traced. Most useful on failures, but recorded for\
+            \ successful calls too. Where an error response body carries a `requestId`,\
+            \ it is this same id."
+          nullable: true
+          example: 1f0c4a52-9d3e-4a77-9c1f-2b8f0d5e6a31
+        errorCode:
+          type: string
+          description: "Error code explaining WHY a failed call was rejected, when\
+            \ the failure had a typed code — one of `RATE_LIMITED`, `SUBSCRIPTION_LIMIT_EXCEEDED`,\
+            \ `INSUFFICIENT_BALANCE`, `RESOURCE_IN_USE`, `VERSION_CONFLICT`, `SESSION_REFRESH_REQUIRED`.\
+            \ Null for successful calls, for failures that carry only a message, and\
+            \ for calls recorded before this release that are still within your log\
+            \ retention window. Request and response bodies are never logged, so no\
+            \ further detail is available here by design."
+          nullable: true
+          example: RATE_LIMITED
       description: A single API call as recorded after the request completed.
     AccessProfileResponse:
       type: object
@@ -5560,7 +5678,12 @@ components:
             \ (manage access profiles), 'app-contexts:cru', 'logs:r', and the literal\
             \ 'create_own_scoped_key'; you may add custom 'resource:ops' verbs for\
             \ application-specific resources. Bare verbs like 'read'/'write'/'delete'\
-            \ are NOT grantable — use the resource:ops form."
+            \ are NOT grantable — use the resource:ops form. A ':qualifier' segment\
+            \ is honored only where it actually narrows the grant — 'records'/'entities'\
+            \ correlate it for every op; 'documents'/'users' correlate it ONLY for\
+            \ the 's' op (e.g. 'documents:s:invoice' restricts sensitive-field reveal\
+            \ to that type; a qualifier on 'documents:r' or any other resource/op\
+            \ combination is rejected rather than silently ignored)."
           example:
           - records:cru
           - search:r
@@ -5576,7 +5699,12 @@ components:
               \ 'logs:r', and the literal 'create_own_scoped_key'; you may add custom\
               \ 'resource:ops' verbs for application-specific resources. Bare verbs\
               \ like 'read'/'write'/'delete' are NOT grantable — use the resource:ops\
-              \ form."
+              \ form. A ':qualifier' segment is honored only where it actually narrows\
+              \ the grant — 'records'/'entities' correlate it for every op; 'documents'/'users'\
+              \ correlate it ONLY for the 's' op (e.g. 'documents:s:invoice' restricts\
+              \ sensitive-field reveal to that type; a qualifier on 'documents:r'\
+              \ or any other resource/op combination is rejected rather than silently\
+              \ ignored)."
             example: "[\"records:cru\",\"search:r\"]"
         data_scope:
           type: object
@@ -6070,7 +6198,7 @@ components:
           example: 500000
         identity:
           type: integer
-          description: Credits consumed by identity (user/org/client) writes
+          description: Credits consumed by identity (user and entity) writes
           format: int64
           example: 120
         identityMilli:
@@ -6664,6 +6792,8 @@ components:
           - SKIPPED
           - STORED
           - FAILED
+        indexFailure:
+          $ref: "#/components/schemas/IndexFailure"
         indexMode:
           type: string
           description: "How this document is indexed. HYBRID, SEMANTIC, and TEXT are\
@@ -6792,6 +6922,38 @@ components:
           example: 5
       description: "A document, created either by ingesting raw text or by uploading\
         \ a file."
+    IndexFailure:
+      type: object
+      properties:
+        code:
+          type: string
+          description: "A stable, machine-readable reason code. Branch on this value\
+            \ rather than on `message`. `SOURCE_UNAVAILABLE` — the underlying item\
+            \ could not be loaded and may have been deleted. `TEXT_INDEX_FAILED` —\
+            \ keyword indexing failed; the content may still be findable by semantic\
+            \ search. `EMBEDDING_FAILED` — semantic indexing failed; the content may\
+            \ still be findable by keyword search. `INDEXING_FAILED` — no index leg\
+            \ is serving this content, so it is not findable by search at all. `VECTOR_LIMIT_EXCEEDED`\
+            \ — your vector storage limit was reached, so semantic indexing was skipped;\
+            \ keyword search is still serving this content. `INTERNAL` — an error\
+            \ on our side; retry, and contact support if it persists."
+          example: EMBEDDING_FAILED
+          enum:
+          - SOURCE_UNAVAILABLE
+          - TEXT_INDEX_FAILED
+          - EMBEDDING_FAILED
+          - INDEXING_FAILED
+          - VECTOR_LIMIT_EXCEEDED
+          - INTERNAL
+        message:
+          type: string
+          description: "A human-readable explanation of the failure, suitable for\
+            \ showing to an end user. Wording may change between releases — branch\
+            \ on `code` instead."
+          example: Semantic indexing failed. This content may still be findable by
+            keyword search.
+      description: Why search indexing failed. Present only when the index status
+        is FAILED.
     DocumentRequest:
       required:
       - title
@@ -7429,10 +7591,10 @@ components:
           enum:
           - asc
           - desc
-      description: "Request body for an identity lookup (user, organization, or client).\
-        \ Carries the lookup value in the body so a sensitive field's value never\
-        \ travels in the URL query string. Provide exactly one lookup mode: `value`\
-        \ (exact match), `from` plus `to` (range), or `prefix`."
+      description: "Request body for an identity lookup (a user, or an identity entity\
+        \ in any namespace). Carries the lookup value in the body so a sensitive field's\
+        \ value never travels in the URL query string. Provide exactly one lookup\
+        \ mode: `value` (exact match), `from` plus `to` (range), or `prefix`."
     ErasureCertificate:
       type: object
       properties:
@@ -7500,10 +7662,10 @@ components:
           example: 3
         identityRowsDeleted:
           type: integer
-          description: "Number of identity rows deleted (the subject's user, organization,\
-            \ or client record plus its lookup rows). Because the subject's identity\
-            \ is account-wide rather than per-context, it is counted only once here\
-            \ — against the context in which it was resolved."
+          description: "Number of identity rows deleted (the subject's user or identity-entity\
+            \ record plus its lookup rows). Because the subject's identity is account-wide\
+            \ rather than per-context, it is counted only once here — against the\
+            \ context in which it was resolved."
           format: int64
           example: 1
       description: Deletion counts for a single erased context.
@@ -7649,8 +7811,8 @@ components:
           example: 44
         totalIdentities:
           type: integer
-          description: "Total number of identity rows included (users, organizations,\
-            \ and clients)."
+          description: "Total number of identity rows included (users and identity\
+            \ entities, in any namespace)."
           format: int64
           example: 97
       description: "Describes a completed export: the payload's serialization format\
@@ -8408,6 +8570,8 @@ components:
           - INDEXED
           - SKIPPED
           - FAILED
+        indexFailure:
+          $ref: "#/components/schemas/IndexFailure"
         indexMode:
           type: string
           description: "The record's resolved search-index mode: the per-record override\
