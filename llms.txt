@@ -105,8 +105,11 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      namespaces — so an organization is `POST /v1/entities/org`. There are no
      `/v1/orgs` or `/v1/clients` routes.
    - Register your own namespaces (`team`, `project`, …) with
-     `POST /v1/namespaces` (`{"namespace":"team","entityBacked":true}`, root key
-     only). `entityBacked` defaults to `false` — a false/unregistered namespace
+     `POST /v1/namespaces` (`{"namespace":"team","entityBacked":true,"specificityRank":10}`,
+     root key only). `specificityRank` is a required, account-unique integer position
+     in your specificity order (breaks a tie when a caller holds two scope
+     dimensions at once) — leave headroom (`10`, `20`, `30`, …) between values.
+     `entityBacked` defaults to `false` — a false/unregistered namespace
      is a free-string scope value with no entities route, so set it `true` if you
      want entities. Entity-backed values are then existence-checked on write.
    - **Idempotency:** both require an `externalId`. POSTing with an existing
@@ -134,6 +137,11 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 7. **Async Indexing & Webhooks:**
    - Document and record indexing is asynchronous. The resource is created
      immediately but `indexStatus` transitions PENDING_INDEX → INDEXED over seconds.
+     INDEXED means keyword (TEXT) matching is immediate — the semantic (vector)
+     leg is separately eventually-consistent, typically queryable a second or two
+     later. A HYBRID/RAG query sharing keywords with a fresh item still surfaces
+     it right away via the keyword leg; a query that can only match it
+     semantically may not for those first few seconds.
      Indexing can also terminate in FAILED: a failed resource carries an
      `indexFailure` object with a typed `code` (`SOURCE_UNAVAILABLE`,
      `TEXT_INDEX_FAILED`, `EMBEDDING_FAILED`, `INDEXING_FAILED`,
@@ -152,7 +160,10 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      envelope: `{ data, nextCursor }`. Pass `nextCursor` back as the `startFrom`
      query param to fetch the next page; `null` means no more pages.
    - Two endpoints are NOT enveloped: `POST /v1/search` (read `results`) and
-     `GET /v1/usage` (returns its payload directly).
+     `GET /v1/usage` (returns its payload directly). Search paging uses its own
+     `limit` (1–100) plus an explicit `hasMore` boolean on the response — true
+     when more results exist past this page. `totalResults` is an approximate
+     matching-pool size, not a reliable paging signal; use `hasMore` instead.
 
 ## Trust, isolation & compliance
 

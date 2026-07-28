@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.36.0"
+  version: "0.37.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -1657,7 +1657,11 @@ paths:
         \ declaration required) and any field declared as a lookup field on the bound\
         \ schema. A lookup on a sensitive field is rejected here because the value\
         \ would appear in the URL query string; use POST /v1/documents/lookup (the\
-        \ request-body variant) for a sensitive field instead. Results are paginated:\
+        \ request-body variant) for a sensitive field instead. `type`'s schema resolves\
+        \ with basedOn-aware shadowing: your own `userId`- or `scope`-owned variant\
+        \ if you have one, otherwise the shared base — for a scoped credential the\
+        \ owner is always your own token identity; `userId`/`scope` here only apply\
+        \ as an explicit owner selector for a root API key. Results are paginated:\
         \ set `limit` for the page size and feed the returned `nextCursor` back as\
         \ `startFrom` to fetch the next page. The response is a `{data, nextCursor}`\
         \ envelope. Requires the `documents:r` scope."
@@ -1736,6 +1740,22 @@ paths:
           - asc
           - desc
         example: asc
+      - name: userId
+        in: query
+        description: "Root API key ONLY: resolve `type`'s schema as this user would\
+          \ (basedOn-aware shadowing) instead of the shared base — mirrors `GET /v1/schemas?recordType=`'s\
+          \ `userId` selector. Ignored for a scoped credential."
+        schema:
+          type: string
+        example: 550e8400-e29b-41d4-a716-446655440000
+      - name: scope
+        in: query
+        description: "Root API key ONLY: resolve `type`'s schema as this scope would,\
+          \ as a single `namespace:value` entry — mirrors `GET /v1/schemas?recordType=`'s\
+          \ `scope` selector. Ignored for a scoped credential."
+        schema:
+          type: string
+        example: org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
       responses:
         "200":
           description: "A page of matching documents as a `{data, nextCursor}` envelope."
@@ -1746,10 +1766,8 @@ paths:
         "400":
           description: "The request was invalid (for example, a missing `type` or\
             \ `field`, or conflicting lookup modes); or (errorCode `AMBIGUOUS_RECORD_TYPE`)\
-            \ more than one owner in this context has defined a schema for `type`,\
-            \ so this endpoint cannot determine whether `field` is sensitive. This\
-            \ endpoint has no way to select one owner's schema today; contact support\
-            \ if you hit this."
+            \ this context has more than one unrelated (unowned) schema for `type`,\
+            \ which should not be reachable through normal use."
       security:
         - BearerAuth: []
     post:
@@ -1779,10 +1797,8 @@ paths:
         "400":
           description: "The request was invalid (for example, a missing `type` or\
             \ `field`, or conflicting lookup modes); or (errorCode `AMBIGUOUS_RECORD_TYPE`)\
-            \ more than one owner in this context has defined a schema for `type`,\
-            \ so this endpoint cannot determine whether `field` is sensitive. This\
-            \ endpoint has no way to select one owner's schema today; contact support\
-            \ if you hit this."
+            \ this context has more than one unrelated (unowned) schema for `type`,\
+            \ which should not be reachable through normal use."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -2983,9 +2999,10 @@ paths:
       tags:
       - Identity
       summary: Update a scope namespace
-      description: "Updates the mutable fields (`entityBacked`, `defaultSchemaId`)\
-        \ of a registered namespace. The namespace name itself is immutable. Requires\
-        \ a root API key. The reserved built-ins cannot be updated."
+      description: "Updates the mutable fields (`entityBacked`, `defaultSchemaId`,\
+        \ `specificityRank`) of a registered namespace. The namespace name itself\
+        \ is immutable. Requires a root API key. The reserved built-ins cannot be\
+        \ updated."
       operationId: updateNamespace
       parameters:
       - name: namespace
@@ -3110,9 +3127,11 @@ paths:
       tags:
       - Identity
       summary: Register a scope namespace
-      description: Registers a new scope namespace and declares whether its values
-        resolve to identity entities (`entityBacked`). Requires a root API key. The
-        reserved names `org` and `client` are built in and cannot be registered.
+      description: "Registers a new scope namespace and declares whether its values\
+        \ resolve to identity entities (`entityBacked`). Also requires `specificityRank`,\
+        \ an explicit, account-unique position in the specificity order used to break\
+        \ recordType schema-resolution ties. Requires a root API key. The reserved\
+        \ names `org` and `client` are built in and cannot be registered."
       operationId: registerNamespace
       requestBody:
         content:
@@ -3128,7 +3147,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/NamespaceResponse"
         "400":
-          description: "The namespace name is invalid, reserved, or already registered."
+          description: "The namespace name is invalid, reserved, or already registered,\
+            \ or `specificityRank` is missing, out of range, or already taken."
         "403":
           description: A root API key is required to register a namespace.
         "429":
@@ -4093,12 +4113,14 @@ paths:
           \ id. Returns a one-element page, or an empty page if no such schema exists.\
           \ Resolved in the calling context for record and document types; combine\
           \ with `surface=user` or `surface=entity` to resolve an account-wide identity\
-          \ schema. Takes precedence over `userId`; a `scope` filter still applies,\
-          \ so a resolved schema outside that scope returns an empty page. A type\
-          \ name is unique per owner, not per context — if more than one owner in\
-          \ this context has defined a schema with this name, the request fails with\
-          \ `400 AMBIGUOUS_RECORD_TYPE` instead of guessing; resolve by `id` instead,\
-          \ or add `userId`/`scope` to narrow to one owner first."
+          \ schema. A type name may have several schemas in one context — a shared\
+          \ base, plus per-owner variants declared via `basedOn` — and resolution\
+          \ shadows by ownership: your own `userId`- or `scope`-owned variant wins\
+          \ if you have one, otherwise the shared base. For a scoped credential the\
+          \ owner is always your own token identity; `userId`/`scope` here only apply\
+          \ as an explicit owner selector for a root API key (a scoped credential's\
+          \ own identity always governs resolution, and a `scope` filter still narrows\
+          \ the result afterward regardless of credential type)."
         schema:
           type: string
         example: intake_form
@@ -4129,11 +4151,10 @@ paths:
                 $ref: "#/components/schemas/SchemaPage"
         "400":
           description: "Ambiguous `recordType` (errorCode `AMBIGUOUS_RECORD_TYPE`):\
-            \ more than one schema in this context uses this type name, each under\
-            \ a different owner — a schema's `typeName` is unique per owner, not per\
-            \ context, so multiple owners may legitimately define the same one. Resolve\
-            \ the specific schema you want by `id` (`GET /v1/schemas/{id}`), or narrow\
-            \ with `userId`/`scope` first to find its owner."
+            \ this context has more than one unrelated (unowned) schema with this\
+            \ type name, which should not be reachable through normal use — every\
+            \ same-named schema is expected to declare `basedOn` against a shared\
+            \ base. Resolve the specific schema you want by `id` (`GET /v1/schemas/{id}`)."
       security:
         - BearerAuth: []
     post:
@@ -4325,7 +4346,10 @@ paths:
       summary: Delete a record schema
       description: "Permanently deletes a record schema. The request is refused with\
         \ 409 if records of this type still exist — delete those records first, since\
-        \ every record must reference a live schema. Requires the `schemas:d` scope."
+        \ every record must reference a live schema. A lineage base (a schema other\
+        \ schemas declare `basedOn`) also cannot be deleted while any such variant\
+        \ still exists — delete the variant schema(s) first. Requires the `schemas:d`\
+        \ scope."
       operationId: deleteSchema
       parameters:
       - name: id
@@ -4341,7 +4365,8 @@ paths:
         "404":
           description: No schema with this id exists in your account.
         "409":
-          description: The schema is still in use by existing records of its type.
+          description: "The schema is still in use by existing records of its type,\
+            \ or (for a lineage base) by an existing basedOn variant."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -6776,7 +6801,17 @@ components:
           type: string
           description: "Processing status of the document (system-managed, read-only).\
             \ PENDING_UPLOAD, UPLOADED, EXTRACTING, and PENDING_INDEX are in-flight\
-            \ states; INDEXED means the document is indexed and searchable; SKIPPED\
+            \ states; INDEXED means indexing is complete and the document is searchable\
+            \ — but the two search strategies do not become queryable at the same\
+            \ instant. Keyword (TEXT) matching is immediate. The semantic (vector)\
+            \ index is eventually consistent for queries: durably written at INDEXED,\
+            \ but typically queryable a second or two later (longer under heavy indexing\
+            \ load). A freshly indexed document that matches a HYBRID or RAG query's\
+            \ keywords still surfaces immediately — you don't wait for the vector\
+            \ index — but a query that can only match it semantically (a `mode: SEMANTIC`\
+            \ search, or a HYBRID/RAG query sharing no words with the document) may\
+            \ not return it for those first few seconds. If you search immediately\
+            \ after a write, share words with the document or briefly retry. SKIPPED\
             \ means extraction produced no indexable text so there was nothing to\
             \ index — the document is stored and retrievable, just not searchable\
             \ (not an error); STORED means it is store-only (indexMode=NONE) — persisted\
@@ -7170,6 +7205,20 @@ components:
           enum:
           - asc
           - desc
+        userId:
+          type: string
+          description: "Root API key ONLY: resolve `type`'s schema as this user would\
+            \ (basedOn-aware shadowing) instead of the shared base — mirrors `GET\
+            \ /v1/schemas?recordType=`'s `userId` selector. Ignored for a scoped credential,\
+            \ which always resolves via its own token identity."
+          example: 550e8400-e29b-41d4-a716-446655440000
+        scope:
+          type: string
+          description: "Root API key ONLY: resolve `type`'s schema as this scope would\
+            \ (basedOn-aware shadowing), as a single `namespace:value` entry — mirrors\
+            \ `GET /v1/schemas?recordType=`'s `scope` selector. Ignored for a scoped\
+            \ credential."
+          example: org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
       description: Request body for `POST /v1/documents/lookup`. Carries the lookup
         value in the body so a sensitive field's value never travels in the URL query
         string.
@@ -8264,6 +8313,13 @@ components:
           description: "ID of the default record schema bound to entities in this\
             \ namespace, or null."
           example: 550e8400-e29b-41d4-a716-446655440000
+        specificityRank:
+          type: integer
+          description: "This namespace's position in your account's specificity order\
+            \ (higher = more specific), used to break a tie when a caller holds two\
+            \ scope dimensions at once during recordType schema resolution."
+          format: int32
+          example: 1500
         createdAt:
           type: string
           description: "Timestamp when the namespace was registered, as an ISO-8601\
@@ -8294,6 +8350,7 @@ components:
     NamespaceRequest:
       required:
       - namespace
+      - specificityRank
       type: object
       properties:
         namespace:
@@ -8321,6 +8378,18 @@ components:
             bound as the default governing schema for entities created in this namespace.
             Must belong to your account.
           example: 550e8400-e29b-41d4-a716-446655440000
+        specificityRank:
+          type: integer
+          description: "This namespace's position in your account's specificity order,\
+            \ used to break a tie when a caller holds two scope dimensions at once\
+            \ during recordType schema resolution — the higher-ranked (more specific)\
+            \ dimension's schema wins. Required on registration (no default); must\
+            \ be an integer between 0 and 1000000, unique across every namespace in\
+            \ your account, and not one of the two values reserved for the built-in\
+            \ namespaces (`org`=1000, `client`=2000). Optional on update — omit to\
+            \ leave it unchanged."
+          format: int32
+          example: 1500
       description: Request body for registering or updating a scope namespace. The
         `namespace` is set on registration and cannot be changed afterwards; PUT updates
         only `entityBacked` and `defaultSchemaId`.
@@ -8557,7 +8626,17 @@ components:
         indexStatus:
           type: string
           description: "Search-index status. PENDING_INDEX means the record is queued\
-            \ for indexing. INDEXED means it is searchable via `POST /v1/search`.\
+            \ for indexing. INDEXED means indexing is complete and it is searchable\
+            \ via `POST /v1/search` — but the two search strategies do not become\
+            \ queryable at the same instant. Keyword (TEXT) matching is immediate.\
+            \ The semantic (vector) index is eventually consistent for queries: durably\
+            \ written at INDEXED, but typically queryable a second or two later (longer\
+            \ under heavy indexing load). A freshly indexed record that matches a\
+            \ HYBRID or RAG query's keywords still surfaces immediately — you don't\
+            \ wait for the vector index — but a query that can only match it semantically\
+            \ (a `mode: SEMANTIC` search, or a HYBRID/RAG query sharing no words with\
+            \ the record) may not return it for those first few seconds. If you search\
+            \ immediately after a write, share words with the record or briefly retry.\
             \ SKIPPED means the record had no indexable text (e.g. only non-searchable\
             \ fields populated) so there was nothing to index — it is stored and retrievable,\
             \ just not full-text/semantic searchable until a searchable field is filled\
@@ -9307,6 +9386,11 @@ components:
           type: boolean
           description: Whether this schema is active.
           example: true
+        basedOn:
+          type: string
+          description: "The id of the schema this one is a customization of, or null\
+            \ if this schema IS the shared base for `typeName` in this context."
+          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
         schemaVersion:
           type: integer
           description: "Schema version number, incremented each time the schema definition\
@@ -9490,6 +9574,18 @@ components:
               \ new selection (`[]` clears it). Filter lists by these values with\
               \ `?scope=`."
             example: "[\"group:eng-team\"]"
+        basedOn:
+          type: string
+          description: "The id of an existing schema this one is a CUSTOMIZATION of,\
+            \ when a schema named `typeName` already exists in this context — required\
+            \ in that case (a same-named schema without it is rejected: \"specify\
+            \ basedOn\"), and must be omitted when this create is the FIRST schema\
+            \ under that name (it becomes that name's shared base, and must be created\
+            \ with no `userId`/`scopes` — a root/unscoped credential). Must point\
+            \ directly at the base (one hop); a variant of a variant is not yet supported.\
+            \ Immutable once set. Every same-named schema in a context is provably\
+            \ related through this chain — see the recordType-shadowing design doc."
+          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
       description: "Request body for creating or updating a record schema. On update\
         \ (PUT), fields you omit are preserved and `typeName` cannot be changed; collection\
         \ fields (`fields`, `lookupFields`, `renderHints`, `capabilities`) are replaced\
@@ -9551,6 +9647,13 @@ components:
             description: "Which search engines were unavailable for this response:\
               \ `text` (keyword) and/or `vector` (semantic). Empty when the search\
               \ was not degraded."
+        hasMore:
+          type: boolean
+          description: "True when more matching results are available past this page.\
+            \ Raise `limit` or advance `offset` (up to its max of 200) to fetch them;\
+            \ false also once `offset` is at its max, since no further page is reachable\
+            \ regardless of how many results exist."
+          example: false
       description: "The result of a search: the matched content chunks plus metadata\
         \ about the search run."
     SearchResult:
@@ -9562,6 +9665,13 @@ components:
             \ to. Use it with `GET /v1/documents/{id}` or `GET /v1/records/{id}` (depending\
             \ on `sourceType`) to retrieve the full item."
           example: 550e8400-e29b-41d4-a716-446655440000
+        externalId:
+          type: string
+          description: "The `externalId` you supplied for the source item at ingestion,\
+            \ if any. Null when the item was ingested without one, or when the source\
+            \ item was indexed before this field existed and hasn't been updated or\
+            \ reindexed since."
+          example: crm-12345
         score:
           type: number
           description: The combined relevance score that fuses the text and semantic
@@ -9571,11 +9681,12 @@ components:
           example: 0.85
         textScore:
           type: number
-          description: "The keyword (BM25) relevance component of the score. It is\
-            \ non-zero in HYBRID mode when the keyword engine contributes to the match.\
-            \ It is always 0 in TEXT mode, because that path does not expose per-hit\
-            \ scores — in TEXT mode the order of the results array is the ranking\
-            \ signal, not this field."
+          description: "The keyword (BM25) relevance component of the score. Non-zero\
+            \ in HYBRID mode when the keyword engine contributes to the match. In\
+            \ TEXT mode this is a rank-derived value reflecting the result's relative\
+            \ position, not a raw BM25 magnitude — treat it as meaningful for ordering\
+            \ within this response, not as a score comparable across requests or against\
+            \ other modes."
           format: double
           example: 0.72
         semanticScore:
@@ -9962,6 +10073,16 @@ components:
             \ Use `GET /v1/users?externalId={yourId}` to resolve your own system's\
             \ user ID to the Vectros user ID."
           example: 550e8400-e29b-41d4-a716-446655440000
+        contextId:
+          type: string
+          description: "The app context to mint the token into. Optional — omit it\
+            \ to inherit your own credential's context (a root API key defaults to\
+            \ `default`). Must reference an app context that already exists in your\
+            \ tenant (create one via `POST /v1/app-contexts`); an unrecognized value\
+            \ returns a uniform `404 not found`. Only meaningful for root API key\
+            \ callers — this endpoint is root-key-only, so there is no confined credential\
+            \ this could let reach a context it doesn't hold."
+          example: myapp
         scope:
           $ref: "#/components/schemas/ScopeRequest"
         expiresInSeconds:
@@ -10522,6 +10643,12 @@ components:
           type: string
           description: The stable identifier of the matched result (a document or
             a record).
+        externalId:
+          type: string
+          description: "The externalId you supplied for the source item at ingestion,\
+            \ if any. Null when the item was ingested without one, or when it was\
+            \ indexed before this field existed and hasn't been updated or reindexed\
+            \ since."
         score:
           type: number
           description: The combined relevance score from hybrid ranking. Higher is
@@ -10529,13 +10656,18 @@ components:
           format: double
         textScore:
           type: number
-          description: "The keyword (BM25) relevance score, from 0 to 1. Null when\
-            \ this match came from semantic search only."
+          description: "The keyword relevance component of the score. Non-zero in\
+            \ HYBRID mode when the keyword engine contributes to the match, and in\
+            \ TEXT mode. In TEXT mode this is a rank-derived value reflecting the\
+            \ result's relative position, not a normalized BM25 magnitude — meaningful\
+            \ for ordering within this response, not comparable across requests or\
+            \ against HYBRID/SEMANTIC scores. 0 (not null) when this match came from\
+            \ semantic search only."
           format: double
         semanticScore:
           type: number
           description: "The cosine-similarity score from semantic (vector) search,\
-            \ from 0 to 1. Null when this match came from keyword search only."
+            \ from 0 to 1. 0 (not null) when this match came from keyword search only."
           format: double
         chunkText:
           type: string
