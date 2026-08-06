@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.37.0"
+  version: "0.38.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -176,8 +176,9 @@ paths:
       tags:
       - Auth
       summary: List your scoped API keys
-      description: Lists all of your scoped API keys (`ssk_*`) across both your live
-        and test environments. Revoked keys are excluded. Requires the `keys:r` scope.
+      description: "Lists your scoped API keys (`ssk_*`) in your credential's own\
+        \ environment — a live key lists live keys, a test key lists test keys. Revoked\
+        \ keys are excluded. Requires the `keys:r` scope."
       operationId: listScopedKeys
       responses:
         "200":
@@ -274,8 +275,9 @@ paths:
         "403":
           description: Your token lacks the `keys:r` scope.
         "404":
-          description: No such key in your account. Keys belonging to another account
-            return this same response.
+          description: "No such key in your credential's environment. A key in your\
+            \ other environment, and a key belonging to another account, both return\
+            \ this same response."
       security:
         - BearerAuth: []
     delete:
@@ -299,8 +301,9 @@ paths:
         "403":
           description: Your token lacks the `keys:d` scope.
         "404":
-          description: No such key in your account. Keys belonging to another account
-            return this same response.
+          description: "No such key in your credential's environment. A key in your\
+            \ other environment, and a key belonging to another account, both return\
+            \ this same response."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -459,15 +462,17 @@ paths:
         \ — 201 when created, 200 when an existing profile was returned) tells the\
         \ two apart. To overwrite an existing profile's `scopes`/`roleId`, `identityOverrides`,\
         \ and `status` instead of returning it unchanged, set `?upsert=true` (this\
-        \ also requires the `profiles:u` scope). You must provide exactly one of `scopes`\
-        \ (an inline list of scopes) or `roleId` (a reference to a role); supplying\
-        \ both, or neither, is rejected. `identityOverrides` is keyed by ownership\
-        \ namespace in `scope:<namespace>` form — `scope:org` and `scope:client` for\
-        \ the reserved namespaces, or any namespace you have registered — and may\
-        \ name at most two; any other key (including the account identifier or `userId`)\
-        \ is rejected. If you use a scoped credential, the profile's effective scopes\
-        \ may not exceed your own; a root API key (`sk_`) is exempt. Requires the\
-        \ `profiles:c` scope."
+        \ also requires the `profiles:u` scope, and applies the same `identityOverrides`\
+        \ bounds the update endpoint documents — a scoped credential may not repoint\
+        \ or clear an identity value it does not itself hold). You must provide exactly\
+        \ one of `scopes` (an inline list of scopes) or `roleId` (a reference to a\
+        \ role); supplying both, or neither, is rejected. `identityOverrides` is keyed\
+        \ by ownership namespace in `scope:<namespace>` form — `scope:org` and `scope:client`\
+        \ for the reserved namespaces, or any namespace you have registered — and\
+        \ may name at most two; any other key (including the account identifier or\
+        \ `userId`) is rejected. If you use a scoped credential, the profile's effective\
+        \ scopes may not exceed your own; a root API key (`sk_`) is exempt. Requires\
+        \ the `profiles:c` scope."
       operationId: createAccessProfile
       parameters:
       - name: upsert
@@ -799,8 +804,12 @@ paths:
         \ any `roleId`, and setting `roleId` clears any inline `scopes`. The `contextId`\
         \ and `principalId` are immutable. Status changes (for example active to suspended)\
         \ take effect within about five minutes. If you use a scoped credential, the\
-        \ profile's effective scopes may not exceed your own; a root API key (`sk_`)\
-        \ is exempt. Requires the `profiles:u` scope."
+        \ profile's effective scopes may not exceed your own, and its `identityOverrides`\
+        \ are bounded twice: you may only set a value your own identity holds, and\
+        \ you may only change or clear a value the profile already holds if that value\
+        \ is yours as well. Repointing or clearing another principal's established\
+        \ identity therefore returns 403. A root API key (`sk_`) is exempt. Requires\
+        \ the `profiles:u` scope."
       operationId: updateAccessProfile
       parameters:
       - name: contextId
@@ -854,7 +863,11 @@ paths:
       summary: Delete an access profile
       description: "Deletes an access profile. Within about five minutes (the access-profile\
         \ cache lifetime), token minting for this principal in this context will be\
-        \ denied. Requires the `profiles:d` scope."
+        \ denied. If you use a scoped credential and the profile carries `identityOverrides`,\
+        \ you may only delete it when you hold those values yourself — deleting a\
+        \ profile removes its identity, so the same bound applies as when clearing\
+        \ it. A profile with no `identityOverrides` is unaffected, and a root API\
+        \ key (`sk_`) is exempt. Requires the `profiles:d` scope."
       operationId: deleteAccessProfile
       parameters:
       - name: contextId
@@ -1318,8 +1331,9 @@ paths:
       - name: scope
         in: query
         description: "Filter to documents carrying this scope value, in `namespace:value`\
-          \ form — for example `group:eng-team`, `org:<id>`, or `client:<id>`. Resolve\
-          \ an entity's UUID from your own identifier via `GET /v1/entities/{namespace}?externalId=`."
+          \ form (a value is 1-128 chars: a letter or digit first, then letters, digits,\
+          \ `_` or `-`) — for example `group:eng-team`, `org:<id>`, or `client:<id>`.\
+          \ Resolve an entity's UUID from your own identifier via `GET /v1/entities/{namespace}?externalId=`."
         schema:
           type: string
         example: group:eng-team
@@ -1332,11 +1346,15 @@ paths:
         example: f47ac10b-58cc-4372-a567-0e02b2c3d479
       - name: startFrom
         in: query
-        description: Pagination cursor — pass the `nextCursor` returned by the previous
-          page.
+        description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
+          \ page to fetch the next page; omit it for the first page. The cursor is\
+          \ **opaque** — echo it back unchanged, and do not parse it or construct\
+          \ one. Keep every other query parameter identical while paging: a cursor\
+          \ is valid only for the exact query that returned it, and reusing one against\
+          \ a different query is rejected with a 400."
         schema:
           type: string
-        example: doc_prev123
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
       - name: limit
         in: query
         description: Maximum number of documents to return per page (1-100; defaults
@@ -1621,7 +1639,14 @@ paths:
                 $ref: "#/components/schemas/DocumentResponse"
         "400":
           description: "The request was invalid: an immutable field was sent, a top-level\
-            \ field was set to `null`, or the merged result failed schema validation."
+            \ field was set to `null`, or the merged result failed schema validation;\
+            \ or the ownership the row would end up with falls outside your credential's\
+            \ `data_scope`, because no single clause of it both authorizes this update\
+            \ and covers the resulting ownership."
+        "403":
+          description: The request tries to reassign the row's owning `userId`. The
+            principal is attributed by the server from your credential and cannot
+            be changed by an update.
         "404":
           description: "No document with this ID exists in your account, or it is\
             \ outside your access scope."
@@ -1713,11 +1738,15 @@ paths:
         example: PO-2024
       - name: startFrom
         in: query
-        description: Pagination cursor — pass the `nextCursor` returned by the previous
-          page.
+        description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
+          \ page to fetch the next page; omit it for the first page. The cursor is\
+          \ **opaque** — echo it back unchanged, and do not parse it or construct\
+          \ one. Keep every other query parameter identical while paging: a cursor\
+          \ is valid only for the exact query that returned it, and reusing one against\
+          \ a different query is rejected with a 400."
         schema:
           type: string
-        example: 550e8400-e29b-41d4-a716-446655440000
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
       - name: limit
         in: query
         description: Maximum number of documents to return per page (1-100; defaults
@@ -2091,9 +2120,15 @@ paths:
         example: asc
       - name: startFrom
         in: query
-        description: Pagination cursor from a previous page's `nextCursor`.
+        description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
+          \ page to fetch the next page; omit it for the first page. The cursor is\
+          \ **opaque** — echo it back unchanged, and do not parse it or construct\
+          \ one. Keep every other query parameter identical while paging: a cursor\
+          \ is valid only for the exact query that returned it, and reusing one against\
+          \ a different query is rejected with a 400."
         schema:
           type: string
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
       - name: limit
         in: query
         description: Maximum entities per page (1-100; defaults to 20).
@@ -2623,18 +2658,23 @@ paths:
       - name: scope
         in: query
         description: "Filter to folders carrying this scope value, in `namespace:value`\
-          \ form — for example `group:eng-team`, `org:<id>`, or `client:<id>`. Resolve\
-          \ an entity's UUID from your own identifier via `GET /v1/entities/{namespace}?externalId=`."
+          \ form (a value is 1-128 chars: a letter or digit first, then letters, digits,\
+          \ `_` or `-`) — for example `group:eng-team`, `org:<id>`, or `client:<id>`.\
+          \ Resolve an entity's UUID from your own identifier via `GET /v1/entities/{namespace}?externalId=`."
         schema:
           type: string
         example: group:eng-team
       - name: startFrom
         in: query
-        description: Pagination cursor. Pass the `nextCursor` value from the previous
-          page to fetch the next page; omit it for the first page.
+        description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
+          \ page to fetch the next page; omit it for the first page. The cursor is\
+          \ **opaque** — echo it back unchanged, and do not parse it or construct\
+          \ one. Keep every other query parameter identical while paging: a cursor\
+          \ is valid only for the exact query that returned it, and reusing one against\
+          \ a different query is rejected with a 400."
         schema:
           type: string
-        example: fld_prev123
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
       - name: limit
         in: query
         description: Maximum number of folders to return per page. Must be between
@@ -2788,6 +2828,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FolderResponse"
+        "403":
+          description: The request tries to reassign the row's owning `userId`. The
+            principal is attributed by the server from your credential and cannot
+            be changed by an update.
         "404":
           description: No folder with the given ID exists in your account.
         "429":
@@ -2883,7 +2927,13 @@ paths:
           description: "The patch was invalid — it attempted to change an immutable\
             \ field (`slug` or `parentFolderId`) or set `name`, `description`, or\
             \ `userId` to null. To clear the folder's scope ownership, send `\"scopes\"\
-            : []`."
+            : []`; or the ownership the row would end up with falls outside your credential's\
+            \ `data_scope`, because no single clause of it both authorizes this update\
+            \ and covers the resulting ownership."
+        "403":
+          description: The request tries to reassign the row's owning `userId`. The
+            principal is attributed by the server from your credential and cannot
+            be changed by an update.
         "404":
           description: No folder with the given ID exists in your account.
         "409":
@@ -3432,19 +3482,24 @@ paths:
       - name: scope
         in: query
         description: "Filter to records carrying this scope value, in `namespace:value`\
-          \ form — for example `group:eng-team`, `org:<id>`, or `client:<id>`. Resolve\
-          \ an entity's UUID from your own identifier via `GET /v1/entities/{namespace}?externalId=`.\
+          \ form (a value is 1-128 chars: a letter or digit first, then letters, digits,\
+          \ `_` or `-`) — for example `group:eng-team`, `org:<id>`, or `client:<id>`.\
+          \ Resolve an entity's UUID from your own identifier via `GET /v1/entities/{namespace}?externalId=`.\
           \ Combine with `type` or `folderId`."
         schema:
           type: string
         example: group:eng-team
       - name: startFrom
         in: query
-        description: Pagination cursor. Pass the `nextCursor` returned by the previous
-          page to fetch the next page; omit it for the first page.
+        description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
+          \ page to fetch the next page; omit it for the first page. The cursor is\
+          \ **opaque** — echo it back unchanged, and do not parse it or construct\
+          \ one. Keep every other query parameter identical while paging: a cursor\
+          \ is valid only for the exact query that returned it, and reusing one against\
+          \ a different query is rejected with a 400."
         schema:
           type: string
-        example: 550e8400-e29b-41d4-a716-446655440000
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
       - name: limit
         in: query
         description: Maximum number of records to return per page. Allowed range 1–100;
@@ -3684,11 +3739,17 @@ paths:
                 $ref: "#/components/schemas/RecordResponse"
         "400":
           description: "The request is invalid — for example the payload fails schema\
-            \ validation; or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference` field's\
-            \ target type has more than one schema across different owners in this\
-            \ context, so the reference cannot be resolved. This endpoint has no way\
-            \ to select one owner's schema for a reference target today; contact support\
-            \ if you hit this."
+            \ validation; or the ownership the record would end up with falls outside\
+            \ your credential's `data_scope`, because no single clause of it both\
+            \ authorizes this update and covers the resulting ownership; or (errorCode\
+            \ `AMBIGUOUS_RECORD_TYPE`) a `reference` field's target type has more\
+            \ than one schema across different owners in this context, so the reference\
+            \ cannot be resolved. This endpoint has no way to select one owner's schema\
+            \ for a reference target today; contact support if you hit this."
+        "403":
+          description: "Your API key or token lacks the `records:u` scope; or the\
+            \ request tries to reassign the record's `userId`, which is attributed\
+            \ by the server from your credential and cannot be changed by an update."
         "404":
           description: "No record with this ID exists in your account, or it is outside\
             \ your token's scope."
@@ -3799,7 +3860,13 @@ paths:
         "400":
           description: "The request is invalid — for example you tried to change an\
             \ immutable field, sent a top-level field as null, or the merged state\
-            \ fails schema validation."
+            \ fails schema validation; or the ownership the record would end up with\
+            \ falls outside your credential's `data_scope`, because no single clause\
+            \ of it both authorizes this update and covers the resulting ownership."
+        "403":
+          description: "Your API key or token lacks the `records:u` scope; or the\
+            \ request tries to reassign the record's `userId`, which is attributed\
+            \ by the server from your credential and cannot be changed by an update."
         "404":
           description: "No record with this ID exists in your account, or it is outside\
             \ your token's scope."
@@ -3830,16 +3897,16 @@ paths:
       tags:
       - Records
       summary: "Lookup records by field value (equality, range, or prefix)"
-      description: "Finds records by the value of a lookup field declared on the type's\
-        \ schema. Provide exactly one lookup mode: `value` (exact match), `from`+`to`\
-        \ (inclusive range, ascending by value), or `prefix` (string fields only,\
-        \ ascending). Range and prefix lookups are not supported on a sensitive field,\
-        \ because its value is stored as a blind index and has no sortable order.\
-        \ An exact-`value` lookup on a sensitive field is also rejected on this GET\
-        \ endpoint — the value must not appear in the URL — so use the `POST /v1/records/lookup`\
-        \ body variant for sensitive fields. Results are paginated: set `limit` for\
-        \ the page size and pass the returned `nextCursor` back as `startFrom` for\
-        \ the next page. Requires the `records:r:<type>` scope."
+      description: |-
+        Finds records by the value of a lookup field declared on the type's schema. Provide exactly one lookup mode: `value` (exact match), `from`+`to` (inclusive range, ascending by value), or `prefix` (string fields only, ascending). Range and prefix lookups are not supported on a sensitive field, because its value is stored as a blind index and has no sortable order. An exact-`value` lookup on a sensitive field is also rejected on this GET endpoint — the value must not appear in the URL — so use the `POST /v1/records/lookup` body variant for sensitive fields.
+
+        A `value` lookup can additionally be narrowed to a window of the lookup field's **sort key** using `sortFrom` and/or `sortTo` (inclusive) — for example, one session's records created since a timestamp. The sort key is whatever the schema declares as that lookup's `sortBy` (`createdAt` by default, `lastUpdated`, or another field), and bounds are given in that field's own units — epoch milliseconds for the two timestamp options. **Records that have no value for the sorted field are never included in a bounded window** — they are ordered ahead of every record that does have one, and a `sortFrom`/`sortTo` window only ever selects from records carrying a value. The sorted field does not have to be `required`.
+
+        Narrowing is available on any lookup field your schema declares for fast equality lookup, and on `externalId` — which is always ordered by creation time, so its bounds are epoch milliseconds whatever the schema says. It is rejected (`400`) for a field declared with `rangeEnabled`, for a field declared beyond the schema's fast-lookup budget, for a lookup whose `sortBy` names a sensitive field (a sensitive value is stored as a blind index and has no order), and for a window whose start is after its end. Ownership fields are not lookup fields on this endpoint at all — see the `field` parameter.
+
+        While paging a narrowed lookup, keep every other parameter identical. The cursor is valid only for the exact query that returned it — changing `order`, `sortFrom`, `sortTo`, or dropping them altogether, is rejected rather than silently resumed at a position that means something different in the new query.
+
+        Results are paginated: set `limit` for the page size and pass the returned `nextCursor` back as `startFrom` for the next page. **Keep paging until `nextCursor` is null** — a page can come back empty or shorter than `limit` while more results remain, so an empty page is not the end of the results. Requires the `records:r:<type>` scope.
       operationId: lookupRecords
       parameters:
       - name: type
@@ -3859,12 +3926,24 @@ paths:
         example: email
       - name: value
         in: query
-        description: Exact value to match. Mutually exclusive with `from`/`to` and
-          `prefix`. Rejected for a sensitive field — use `POST /v1/records/lookup`
-          instead so the value is not exposed in the URL.
+        description: "Exact value to match. Mutually exclusive with `from`/`to`, `prefix`\
+          \ and `values`. Rejected for a sensitive field — use `POST /v1/records/lookup`\
+          \ instead so the value is not exposed in the URL."
         schema:
           type: string
         example: jane@example.com
+      - name: values
+        in: query
+        description: |-
+          Exact values to match, for a lookup declared over several fields — one value per field, in the order the lookup declares them, given as a repeated parameter (`?field=status,area&values=open&values=billing`). Mutually exclusive with `value`; a single `values` is identical to `value`.
+
+          You may supply fewer values than the lookup declares, as long as they are a leading run of its fields; doing so returns the records grouped by the fields you left unspecified. Narrowing with `sortFrom`/`sortTo` then requires a value for every field, because the ordering is only continuous within one fully specified combination.
+        style: form
+        schema:
+          type: array
+          items:
+            type: string
+            example: open
       - name: from
         in: query
         description: Inclusive lower bound of a range lookup (requires `to`; non-sensitive
@@ -3885,13 +3964,36 @@ paths:
         schema:
           type: string
         example: jane
-      - name: startFrom
+      - name: sortFrom
         in: query
-        description: Pagination cursor. Pass the `nextCursor` from the previous page;
-          omit it for the first page.
+        description: "Inclusive lower bound on the lookup field's sort key, narrowing\
+          \ a `value` match to records at or after this point. Use with `value`; combine\
+          \ with `sortTo` to bound both ends. Give the bound in the same form as the\
+          \ sorted field's own values — epoch milliseconds when the lookup sorts by\
+          \ `createdAt` or `lastUpdated`. Records with no value for the sorted field\
+          \ are never included in a bounded window."
         schema:
           type: string
-        example: 550e8400-e29b-41d4-a716-446655440000
+        example: 1735689600000
+      - name: sortTo
+        in: query
+        description: "Inclusive upper bound on the lookup field's sort key, narrowing\
+          \ a `value` match to records at or before this point. Use with `value`;\
+          \ combine with `sortFrom`."
+        schema:
+          type: string
+        example: 1738368000000
+      - name: startFrom
+        in: query
+        description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
+          \ page to fetch the next page; omit it for the first page. The cursor is\
+          \ **opaque** — echo it back unchanged, and do not parse it or construct\
+          \ one. Keep every other query parameter identical while paging: a cursor\
+          \ is valid only for the exact query that returned it, and reusing one against\
+          \ a different query is rejected with a 400."
+        schema:
+          type: string
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
       - name: limit
         in: query
         description: Maximum number of records to return per page. Allowed range 1–100;
@@ -3928,7 +4030,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RecordLookupResponse"
+                $ref: "#/components/schemas/RecordLookupPage"
         "400":
           description: "The request is invalid — for example you supplied no lookup\
             \ mode or more than one, attempted a range or prefix lookup on a sensitive\
@@ -3948,9 +4050,12 @@ paths:
         \ is blind-indexed server-side) instead of in the URL query string, so it\
         \ never lands in access, CDN, or proxy logs. The GET variant rejects an exact-value\
         \ lookup on a sensitive field and directs you here. Non-sensitive exact-value,\
-        \ range (`from`+`to`), and prefix lookups also work here. Returns the same\
-        \ `{data, nextCursor}` envelope and uses the same pagination as the GET variant.\
-        \ Requires the `records:r:<type>` scope."
+        \ range (`from`+`to`), and prefix lookups also work here, as does narrowing\
+        \ a `value` lookup by the field's sort key with `sortFrom`/`sortTo` — see\
+        \ the GET variant for what the sort key is and when narrowing by it is available.\
+        \ Returns the same `{data, nextCursor}` envelope and uses the same pagination\
+        \ as the GET variant; keep paging until `nextCursor` is null rather than stopping\
+        \ on an empty page. Requires the `records:r:<type>` scope."
       operationId: lookupRecordsByBody
       requestBody:
         content:
@@ -3964,7 +4069,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RecordLookupResponse"
+                $ref: "#/components/schemas/RecordLookupPage"
         "400":
           description: "The request is invalid — for example you supplied no lookup\
             \ mode or more than one, attempted a range or prefix lookup on a sensitive\
@@ -4126,11 +4231,15 @@ paths:
         example: intake_form
       - name: startFrom
         in: query
-        description: Pagination cursor. Pass the `nextCursor` from the previous page
-          to fetch the next page; omit it for the first page.
+        description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
+          \ page to fetch the next page; omit it for the first page. The cursor is\
+          \ **opaque** — echo it back unchanged, and do not parse it or construct\
+          \ one. Keep every other query parameter identical while paging: a cursor\
+          \ is valid only for the exact query that returned it, and reusing one against\
+          \ a different query is rejected with a 400."
         schema:
           type: string
-        example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
       - name: limit
         in: query
         description: Maximum number of schemas to return per page (1–100; defaults
@@ -4320,7 +4429,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/SchemaResponse"
         "400":
-          description: The request body failed validation.
+          description: "The request body failed validation; or the ownership the row\
+            \ would end up with falls outside your credential's `data_scope`, because\
+            \ no single clause of it both authorizes this update and covers the resulting\
+            \ ownership."
+        "403":
+          description: The request tries to reassign the row's owning `userId`. The
+            principal is attributed by the server from your credential and cannot
+            be changed by an update.
         "404":
           description: No schema with this id exists in your account.
         "429":
@@ -4555,11 +4671,15 @@ paths:
         example: usr_12345
       - name: startFrom
         in: query
-        description: Pagination cursor. Pass the `nextCursor` from the previous page
-          to fetch the next page; omit it for the first page.
+        description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
+          \ page to fetch the next page; omit it for the first page. The cursor is\
+          \ **opaque** — echo it back unchanged, and do not parse it or construct\
+          \ one. Keep every other query parameter identical while paging: a cursor\
+          \ is valid only for the exact query that returned it, and reusing one against\
+          \ a different query is rejected with a 400."
         schema:
           type: string
-        example: 550e8400-e29b-41d4-a716-446655440000
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
       - name: limit
         in: query
         description: Maximum number of users to return per page (1–100; defaults to
@@ -4661,7 +4781,8 @@ paths:
         description: "When `true`, if a user with the same `externalId` already exists\
           \ its mutable fields (email, status, payload, schemaId) are updated to the\
           \ submitted values instead of being returned unchanged; the immutable `externalId`\
-          \ and `type` are never changed. Defaults to `false`. Requires the `users:u`\
+          \ and `type` are never changed, and `email` cannot be changed while an invitation\
+          \ to that user is still outstanding. Defaults to `false`. Requires the `users:u`\
           \ scope in addition to `users:c`."
         schema:
           type: boolean
@@ -4748,7 +4869,9 @@ paths:
       - Identity
       summary: Update a user
       description: "Updates mutable fields on an existing user (such as email, status,\
-        \ payload, or schema binding). The `type` field is immutable after creation.\
+        \ payload, or schema binding). The `type` field is immutable after creation,\
+        \ and `email` cannot be changed while an invitation to that user is still\
+        \ outstanding — revoke the invitation, or invite the new address instead.\
         \ This endpoint also activates an invited user: a PUT that moves a PENDING\
         \ user to ACTIVE and carries `inviteToken`, `externalSubject`, and `emailVerifiedAttestation=true`\
         \ completes the invitation. Requires the `users:u` scope."
@@ -4774,6 +4897,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserResponse"
+        "400":
+          description: "Validation error: an immutable field was changed, or `email`\
+            \ was changed while an invitation to that user is still outstanding."
         "404":
           description: No user with the given ID exists in your account.
         "429":
@@ -4925,14 +5051,18 @@ paths:
         \ a pending user with a pre-resolved access profile (their permissions on\
         \ accept) and signs an invitation token. This call is idempotent on the combination\
         \ of context and email: re-inviting the same email in the same context rotates\
-        \ the token and resends the invitation rather than creating a duplicate. Returns\
+        \ the token and resends the invitation rather than creating a duplicate —\
+        \ this requires the `users:r` and `users:u` scopes in addition to `users:c`,\
+        \ because resending rotates a credential on an existing invitation and invalidates\
+        \ any link already sent. Without them the collision returns 409 instead, with\
+        \ no invitation details and no change to the outstanding invitation. Returns\
         \ HTTP 201 on a new invite or a successful resend. Returns 409 if that email\
         \ already belongs to an active or suspended member of the app context, or\
         \ already has an identity elsewhere in your account (an email can currently\
         \ belong to only one tenant per account, i.e. your test and live environments\
         \ cannot share an email). When `sendEmail` is false, the response includes\
         \ the raw token and a ready-to-use accept link so you can deliver the invitation\
-        \ through your own email provider. Requires the `admin:users` scope."
+        \ through your own email provider. Requires the `users:c` scope."
       operationId: createInvite
       requestBody:
         content:
@@ -4950,16 +5080,21 @@ paths:
                 $ref: "#/components/schemas/CreateInviteResponse"
         "400":
           description: "Validation error: malformed email, an `acceptUrl` that is\
-            \ not an https domain URL, or a `ttlSeconds` outside the allowed range."
+            \ not an https domain URL, a `ttlSeconds` outside the allowed range, or\
+            \ an `accessProfile.roleId` that does not name a role in this app context."
         "403":
-          description: Your token lacks the `admin:users` scope.
+          description: "Your token lacks the `users:c` scope, or is bound to a different\
+            \ app context."
         "404":
           description: The referenced app context does not exist in your account.
         "409":
-          description: "Email already in use: either an active or suspended member\
-            \ of this context already has it, or it is already associated with an\
-            \ identity elsewhere in your account. Only the second case returns a structured\
-            \ body with the `email_already_associated` error code."
+          description: "Email already in use: an active or suspended member of this\
+            \ context already has it; an outstanding invitation already exists and\
+            \ your token lacks the `users:r` and `users:u` scopes needed to resend\
+            \ it; or it is already associated with an identity elsewhere in your account.\
+            \ The first two cases are deliberately indistinguishable. Only the last\
+            \ returns a structured body with the `email_already_associated` error\
+            \ code."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -4987,8 +5122,9 @@ paths:
         \ app context. Rotates the invitation token and extends its expiry, then (when\
         \ `sendEmail` is true) re-delivers the email. Rotating the token invalidates\
         \ any previously issued link for this invitation, so only the newest link\
-        \ works. The invitee's pending permissions are left unchanged. Requires the\
-        \ `admin:users` scope."
+        \ works. The invitee's pending permissions are left unchanged. Because this\
+        \ rotates a credential on an existing invitation, it requires the `users:c`,\
+        \ `users:r` and `users:u` scopes."
       operationId: resendInvite
       requestBody:
         content:
@@ -5007,7 +5143,7 @@ paths:
           description: "Validation error: malformed email, missing context, or an\
             \ invalid `acceptUrl` / `ttlSeconds`."
         "403":
-          description: Your token lacks the `admin:users` scope.
+          description: "Your token lacks the `users:c`, `users:r` or `users:u` scope."
         "404":
           description: No pending invitation matches the supplied email and app context.
         "429":
@@ -5292,11 +5428,15 @@ components:
             $ref: "#/components/schemas/ReadAccessLogResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of PHI read-access (accounting-of-disclosures) rows — a\
         \ `{data, nextCursor}` envelope. `nextCursor` is an opaque cursor, null when\
         \ no more pages remain; pass it back as the `startFrom` query param to fetch\
@@ -5513,11 +5653,15 @@ components:
             $ref: "#/components/schemas/ScopedKeyResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A paginated list of scoped API keys, returned as a `{data, nextCursor}`\
         \ envelope. `nextCursor` is an opaque cursor for fetching the next page, and\
         \ is null when no more pages remain."
@@ -5623,11 +5767,12 @@ components:
           type: string
           description: "Error code explaining WHY a failed call was rejected, when\
             \ the failure had a typed code — one of `RATE_LIMITED`, `SUBSCRIPTION_LIMIT_EXCEEDED`,\
-            \ `INSUFFICIENT_BALANCE`, `RESOURCE_IN_USE`, `VERSION_CONFLICT`, `SESSION_REFRESH_REQUIRED`.\
-            \ Null for successful calls, for failures that carry only a message, and\
-            \ for calls recorded before this release that are still within your log\
-            \ retention window. Request and response bodies are never logged, so no\
-            \ further detail is available here by design."
+            \ `INSUFFICIENT_BALANCE`, `RESOURCE_IN_USE`, `VERSION_CONFLICT`, `SESSION_REFRESH_REQUIRED`,\
+            \ `WRITE_FROZEN`, `UNSUPPORTED_WIRE_VERSION`. Null for successful calls,\
+            \ for failures that carry only a message, and for calls recorded before\
+            \ this release that are still within your log retention window. Request\
+            \ and response bodies are never logged, so no further detail is available\
+            \ here by design."
           nullable: true
           example: RATE_LIMITED
       description: A single API call as recorded after the request completed.
@@ -5700,9 +5845,10 @@ components:
             \ 'documents:r', 'records:rs:patient'. The 's' letter is fail-safe: absent\
             \ it, sensitive fields are masked at the response boundary. The standard\
             \ catalog is '*' (wildcard), 'keys:crd' (manage scoped API keys), 'profiles:cru'\
-            \ (manage access profiles), 'app-contexts:cru', 'logs:r', and the literal\
-            \ 'create_own_scoped_key'; you may add custom 'resource:ops' verbs for\
-            \ application-specific resources. Bare verbs like 'read'/'write'/'delete'\
+            \ (manage access profiles), 'app-contexts:cru', 'users:crud' (manage your\
+            \ tenant's own users, including sub-user invitations), 'logs:r', and the\
+            \ literal 'create_own_scoped_key'; you may add custom 'resource:ops' verbs\
+            \ for application-specific resources. Bare verbs like 'read'/'write'/'delete'\
             \ are NOT grantable — use the resource:ops form. A ':qualifier' segment\
             \ is honored only where it actually narrows the grant — 'records'/'entities'\
             \ correlate it for every op; 'documents'/'users' correlate it ONLY for\
@@ -5721,6 +5867,7 @@ components:
               \ absent it, sensitive fields are masked at the response boundary. The\
               \ standard catalog is '*' (wildcard), 'keys:crd' (manage scoped API\
               \ keys), 'profiles:cru' (manage access profiles), 'app-contexts:cru',\
+              \ 'users:crud' (manage your tenant's own users, including sub-user invitations),\
               \ 'logs:r', and the literal 'create_own_scoped_key'; you may add custom\
               \ 'resource:ops' verbs for application-specific resources. Bare verbs\
               \ like 'read'/'write'/'delete' are NOT grantable — use the resource:ops\
@@ -5735,23 +5882,48 @@ components:
           type: object
           additionalProperties:
             type: object
-            description: "Attribute filters narrowing data this clause applies to,\
-              \ keyed per ownership dimension: 'userId' (the authoring principal)\
-              \ and namespaced scopes 'scope:<namespace>' ('scope:org', 'scope:client',\
-              \ 'scope:group', ...). Empty object = applies to ALL data within the\
-              \ tenant. Multiple keys must ALL match (AND); include null in an allowed-value\
-              \ list (e.g. {\"scope:org\": [\"orgX\", null]}) to ALSO grant access\
-              \ to records that have no value in THAT dimension."
+            description: "Attribute filters narrowing the data this clause applies\
+              \ to, keyed per ownership dimension: 'userId' (the owning user) and\
+              \ namespaced scopes 'scope:<namespace>' ('scope:org', 'scope:client',\
+              \ 'scope:group', ...). Use '*' as the key to state a rule for every\
+              \ dimension this clause does not name explicitly; a named dimension\
+              \ always takes precedence over it. Multiple keys must ALL match (AND).\
+              \ \n\nAllowed values are ids, plus: null — records with NO value in\
+              \ that dimension (e.g. {\"scope:org\": [\"orgX\", null]} means orgX's\
+              \ records AND unowned ones); '${{ any }}' — any value in that dimension,\
+              \ but NOT records lacking one, so combine it with null to cover both;\
+              \ '${{ self.userId }}' / '${{ self.scope.<namespace> }}' — the credential's\
+              \ own value, resolved per request; '${{ under.self.userId }}' / '${{\
+              \ under.self.scope.<namespace> }}' — values whose immediate parent is\
+              \ the credential's own (one level, not a full ancestor walk). Any other\
+              \ '${{ ... }}' spelling is rejected. \n\nReads and writes differ where\
+              \ a dimension is OMITTED: reading is not narrowed by a dimension the\
+              \ clause says nothing about, but writing a value into that dimension\
+              \ is not authorized by silence — a clause must name a dimension (or\
+              \ '*') to place data there. An empty object therefore reads tenant-wide\
+              \ and authorizes no placement."
             example:
               scope:org:
               - org_engineering
-          description: "Attribute filters narrowing data this clause applies to, keyed\
-            \ per ownership dimension: 'userId' (the authoring principal) and namespaced\
+          description: "Attribute filters narrowing the data this clause applies to,\
+            \ keyed per ownership dimension: 'userId' (the owning user) and namespaced\
             \ scopes 'scope:<namespace>' ('scope:org', 'scope:client', 'scope:group',\
-            \ ...). Empty object = applies to ALL data within the tenant. Multiple\
-            \ keys must ALL match (AND); include null in an allowed-value list (e.g.\
-            \ {\"scope:org\": [\"orgX\", null]}) to ALSO grant access to records that\
-            \ have no value in THAT dimension."
+            \ ...). Use '*' as the key to state a rule for every dimension this clause\
+            \ does not name explicitly; a named dimension always takes precedence\
+            \ over it. Multiple keys must ALL match (AND). \n\nAllowed values are\
+            \ ids, plus: null — records with NO value in that dimension (e.g. {\"\
+            scope:org\": [\"orgX\", null]} means orgX's records AND unowned ones);\
+            \ '${{ any }}' — any value in that dimension, but NOT records lacking\
+            \ one, so combine it with null to cover both; '${{ self.userId }}' / '${{\
+            \ self.scope.<namespace> }}' — the credential's own value, resolved per\
+            \ request; '${{ under.self.userId }}' / '${{ under.self.scope.<namespace>\
+            \ }}' — values whose immediate parent is the credential's own (one level,\
+            \ not a full ancestor walk). Any other '${{ ... }}' spelling is rejected.\
+            \ \n\nReads and writes differ where a dimension is OMITTED: reading is\
+            \ not narrowed by a dimension the clause says nothing about, but writing\
+            \ a value into that dimension is not authorized by silence — a clause\
+            \ must name a dimension (or '*') to place data there. An empty object\
+            \ therefore reads tenant-wide and authorizes no placement."
           example:
             scope:org:
             - org_engineering
@@ -5791,8 +5963,16 @@ components:
             \ namespace in `scope:<namespace>` form — `scope:org` and `scope:client`\
             \ for the reserved namespaces, or any namespace you have registered (for\
             \ example `scope:group`). At most two namespaces may be overridden; any\
-            \ other key is rejected. An empty or omitted map applies no overrides\
-            \ — the base identity from the user or key record is used as-is."
+            \ other key is rejected. Each value is 1-128 characters: a letter or digit\
+            \ first, then letters, digits, `_` or `-`. Omitting the field leaves any\
+            \ existing overrides unchanged; sending an empty map clears them, and\
+            \ sending a populated map replaces them wholesale — a namespace absent\
+            \ from the map you send is removed. If you use a scoped credential, two\
+            \ bounds apply and either returns 403: you may only set a value your own\
+            \ identity holds, and you may only change or clear a value the profile\
+            \ already holds if that value is yours as well — so clearing or repointing\
+            \ another principal's established identity is refused. A root API key\
+            \ (`sk_`) is exempt from both."
           example:
             scope:org: org_engineering
         status:
@@ -5918,7 +6098,9 @@ components:
           type: array
           description: "The role's permissions, expressed as one or more scope clauses.\
             \ An action is permitted if any clause allows it and that clause's data\
-            \ scope matches the target."
+            \ scope matches the target — with one exception, an identity entity's\
+            \ own-namespace dimension when creating it, which is server-assigned and\
+            \ therefore exempt from the match at creation time only."
           items:
             $ref: "#/components/schemas/ScopeClause"
         createdAt:
@@ -5963,7 +6145,14 @@ components:
             \ to). An action is permitted if any clause allows that action and that\
             \ clause's data scope matches the target record. To include records whose\
             \ ownership field is null (account-level shared records), add `null` to\
-            \ the allowed values for that field."
+            \ the allowed values for that field. One exception applies when creating\
+            \ an identity entity: the entity's own-namespace dimension (`scope:<namespace>`)\
+            \ takes the value of the ID the server is about to generate, so no clause\
+            \ written beforehand could name it, and that one dimension is exempt from\
+            \ the match on `POST /v1/entities/{namespace}`. It is matched normally\
+            \ on every read, update, and delete — so a clause whose data scope names\
+            \ only that dimension does not restrict what you may create, and an entity\
+            \ created under one may fall outside it once it exists."
           items:
             $ref: "#/components/schemas/ScopeClause"
       description: Request body for creating or updating a role.
@@ -6018,11 +6207,15 @@ components:
             $ref: "#/components/schemas/ModelDataVersionResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A single page of version-history entries, returned by the `.../versions`\
         \ endpoints. The `data` array holds the entries. `nextCursor` is an opaque\
         \ cursor you pass to fetch the next page; it is null when no more pages remain."
@@ -6084,11 +6277,15 @@ components:
             $ref: "#/components/schemas/AccessProfileResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of access profiles — a `{data, nextCursor}` envelope. `nextCursor`\
         \ is an opaque cursor, null when no more pages remain; pass it back to fetch\
         \ the next page."
@@ -6103,11 +6300,15 @@ components:
             $ref: "#/components/schemas/AppContextResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of app contexts as a `{data, nextCursor}` envelope. `nextCursor`\
         \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
         \ or null when no more pages remain."
@@ -6122,11 +6323,15 @@ components:
             $ref: "#/components/schemas/RoleResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of roles as a `{data, nextCursor}` envelope. `nextCursor`\
         \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
         \ or null when no more pages remain."
@@ -7054,23 +7259,27 @@ components:
           type: string
           description: "Owning user ID — the Vectros-assigned UUID of a user in your\
             \ account. Optional. With an API key, sets the document's owner explicitly.\
-            \ With a scoped token, must match the token's identity claim (if set)\
-            \ or fall within its data scope."
+            \ With a scoped token the owning user is attributed by the server from\
+            \ your credential and cannot be set to a different user; supplying one\
+            \ that conflicts is rejected."
           example: 550e8400-e29b-41d4-a716-446655440000
         scopes:
           type: array
           description: "The document's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
             , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
-            \ are custom scopes you define (lowercase, 2-32 chars). Resolve a namespace's\
-            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
-            \ When supplied, this is the document's COMPLETE scope declaration: for\
-            \ a token that stamps identity, entries must match the token's identity\
-            \ values, and an empty array creates a document owned by the calling user\
-            \ alone (the private tier). Omit the field to inherit the token's full\
-            \ identity — the default. On update, omit to leave ownership unchanged,\
-            \ or supply the complete new selection (`[]` clears it). Filter lists\
-            \ by these values with `?scope=`."
+            \ are custom scopes you define (lowercase, 2-32 chars). A `value` is 1-128\
+            \ characters: a letter or digit first, then letters, digits, `_` or `-`.\
+            \ Resolve a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            \ When supplied, this is the document's COMPLETE scope declaration: each\
+            \ entry must fall inside the `data_scope` of a single clause of your credential\
+            \ that also grants this write — your identity supplies the DEFAULT value\
+            \ when you state none, it does not limit which value you may state. An\
+            \ empty array creates a document owned by the calling user alone (the\
+            \ private tier), and requires a credential whose identity carries a user.\
+            \ Omit the field to inherit the token's full identity — the default. On\
+            \ update, omit to leave ownership unchanged, or supply the complete new\
+            \ selection (`[]` clears it). Filter lists by these values with `?scope=`."
           example:
           - group:eng-team
           items:
@@ -7078,15 +7287,19 @@ components:
             description: "The document's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
               , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
-              \ others are custom scopes you define (lowercase, 2-32 chars). Resolve\
-              \ a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
-              \ When supplied, this is the document's COMPLETE scope declaration:\
-              \ for a token that stamps identity, entries must match the token's identity\
-              \ values, and an empty array creates a document owned by the calling\
-              \ user alone (the private tier). Omit the field to inherit the token's\
-              \ full identity — the default. On update, omit to leave ownership unchanged,\
-              \ or supply the complete new selection (`[]` clears it). Filter lists\
-              \ by these values with `?scope=`."
+              \ others are custom scopes you define (lowercase, 2-32 chars). A `value`\
+              \ is 1-128 characters: a letter or digit first, then letters, digits,\
+              \ `_` or `-`. Resolve a namespace's UUID from your own identifier with\
+              \ `GET /v1/entities/{namespace}?externalId=`. When supplied, this is\
+              \ the document's COMPLETE scope declaration: each entry must fall inside\
+              \ the `data_scope` of a single clause of your credential that also grants\
+              \ this write — your identity supplies the DEFAULT value when you state\
+              \ none, it does not limit which value you may state. An empty array\
+              \ creates a document owned by the calling user alone (the private tier),\
+              \ and requires a credential whose identity carries a user. Omit the\
+              \ field to inherit the token's full identity — the default. On update,\
+              \ omit to leave ownership unchanged, or supply the complete new selection\
+              \ (`[]` clears it). Filter lists by these values with `?scope=`."
             example: "[\"group:eng-team\"]"
         externalId:
           type: string
@@ -7136,11 +7349,15 @@ components:
             $ref: "#/components/schemas/DocumentResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of documents matched by a structured-field lookup, as a\
         \ `{data, nextCursor}` envelope. `nextCursor` is an opaque cursor — pass it\
         \ back as `startFrom` to fetch the next page, or null when no more pages remain."
@@ -7268,11 +7485,15 @@ components:
             $ref: "#/components/schemas/DocumentResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of documents as a `{data, nextCursor}` envelope. `nextCursor`\
         \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
         \ or null when no more pages remain."
@@ -7385,21 +7606,26 @@ components:
           type: string
           description: "Owning user ID — the Vectros-assigned UUID of a user in your\
             \ account. Optional. With an API key, sets the document's owner explicitly.\
-            \ With a scoped token, must match the token's identity claim (if set)\
-            \ or fall within its data scope."
+            \ With a scoped token the owning user is attributed by the server from\
+            \ your credential and cannot be set to a different user; supplying one\
+            \ that conflicts is rejected."
           example: 550e8400-e29b-41d4-a716-446655440000
         scopes:
           type: array
           description: "The document's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
             , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
-            \ are custom scopes you define (lowercase, 2-32 chars). Resolve a namespace's\
-            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
-            \ When supplied, this is the document's COMPLETE scope declaration: for\
-            \ a token that stamps identity, entries must match the token's identity\
-            \ values, and an empty array creates a document owned by the calling user\
-            \ alone (the private tier). Omit the field to inherit the token's full\
-            \ identity — the default. Filter lists by these values with `?scope=`."
+            \ are custom scopes you define (lowercase, 2-32 chars). A `value` is 1-128\
+            \ characters: a letter or digit first, then letters, digits, `_` or `-`.\
+            \ Resolve a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            \ When supplied, this is the document's COMPLETE scope declaration: each\
+            \ entry must fall inside the `data_scope` of a single clause of your credential\
+            \ that also grants this write — your identity supplies the DEFAULT value\
+            \ when you state none, it does not limit which value you may state. An\
+            \ empty array creates a document owned by the calling user alone (the\
+            \ private tier), and requires a credential whose identity carries a user.\
+            \ Omit the field to inherit the token's full identity — the default. Filter\
+            \ lists by these values with `?scope=`."
           example:
           - group:eng-team
           items:
@@ -7407,13 +7633,18 @@ components:
             description: "The document's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
               , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
-              \ others are custom scopes you define (lowercase, 2-32 chars). Resolve\
-              \ a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
-              \ When supplied, this is the document's COMPLETE scope declaration:\
-              \ for a token that stamps identity, entries must match the token's identity\
-              \ values, and an empty array creates a document owned by the calling\
-              \ user alone (the private tier). Omit the field to inherit the token's\
-              \ full identity — the default. Filter lists by these values with `?scope=`."
+              \ others are custom scopes you define (lowercase, 2-32 chars). A `value`\
+              \ is 1-128 characters: a letter or digit first, then letters, digits,\
+              \ `_` or `-`. Resolve a namespace's UUID from your own identifier with\
+              \ `GET /v1/entities/{namespace}?externalId=`. When supplied, this is\
+              \ the document's COMPLETE scope declaration: each entry must fall inside\
+              \ the `data_scope` of a single clause of your credential that also grants\
+              \ this write — your identity supplies the DEFAULT value when you state\
+              \ none, it does not limit which value you may state. An empty array\
+              \ creates a document owned by the calling user alone (the private tier),\
+              \ and requires a credential whose identity carries a user. Omit the\
+              \ field to inherit the token's full identity — the default. Filter lists\
+              \ by these values with `?scope=`."
             example: "[\"group:eng-team\"]"
         externalId:
           type: string
@@ -7536,26 +7767,28 @@ components:
           type: array
           description: "The entity's parent ownership edges, each as `<namespace>:<value>`\
             \ (for example `org:6ba7b810-...`). At most two parents, each in a DIFFERENT\
-            \ namespace from the entity's own. On update, providing `scopes` REPLACES\
-            \ the full set of parents; omit it to leave ownership unchanged. The entity's\
-            \ own reference (`<its namespace>:<its id>`) is accepted and ignored,\
-            \ so you can send back the `scopes` you read from a GET unchanged; any\
-            \ OTHER value in its own namespace is rejected, because a parent edge\
-            \ always crosses namespaces — a value in this entity's own namespace names\
-            \ a peer, not a parent."
+            \ namespace from the entity's own. A `<value>` is 1-128 characters: a\
+            \ letter or digit first, then letters, digits, `_` or `-`. On update,\
+            \ providing `scopes` REPLACES the full set of parents; omit it to leave\
+            \ ownership unchanged. The entity's own reference (`<its namespace>:<its\
+            \ id>`) is accepted and ignored, so you can send back the `scopes` you\
+            \ read from a GET unchanged; any OTHER value in its own namespace is rejected,\
+            \ because a parent edge always crosses namespaces — a value in this entity's\
+            \ own namespace names a peer, not a parent."
           example:
           - org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
           items:
             type: string
             description: "The entity's parent ownership edges, each as `<namespace>:<value>`\
               \ (for example `org:6ba7b810-...`). At most two parents, each in a DIFFERENT\
-              \ namespace from the entity's own. On update, providing `scopes` REPLACES\
-              \ the full set of parents; omit it to leave ownership unchanged. The\
-              \ entity's own reference (`<its namespace>:<its id>`) is accepted and\
-              \ ignored, so you can send back the `scopes` you read from a GET unchanged;\
-              \ any OTHER value in its own namespace is rejected, because a parent\
-              \ edge always crosses namespaces — a value in this entity's own namespace\
-              \ names a peer, not a parent."
+              \ namespace from the entity's own. A `<value>` is 1-128 characters:\
+              \ a letter or digit first, then letters, digits, `_` or `-`. On update,\
+              \ providing `scopes` REPLACES the full set of parents; omit it to leave\
+              \ ownership unchanged. The entity's own reference (`<its namespace>:<its\
+              \ id>`) is accepted and ignored, so you can send back the `scopes` you\
+              \ read from a GET unchanged; any OTHER value in its own namespace is\
+              \ rejected, because a parent edge always crosses namespaces — a value\
+              \ in this entity's own namespace names a peer, not a parent."
             example: "[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]"
       description: "Request body for creating or updating an identity entity. The\
         \ namespace comes from the URL path. On update (PUT), omitted fields are preserved\
@@ -7572,11 +7805,15 @@ components:
             $ref: "#/components/schemas/EntityResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of identity entities as a `{data, nextCursor}` envelope.\
         \ `nextCursor` is an opaque cursor — pass it back as `startFrom` to fetch\
         \ the next page, or null when no more pages remain."
@@ -8113,23 +8350,27 @@ components:
           type: string
           description: "Optional ID of the user that should own this folder — the\
             \ Vectros-assigned UUID of a user in your account. With an API key, this\
-            \ sets the folder's owner directly. With a scoped token, it must match\
-            \ the token's identity claim (if one is set) or fall within the token's\
-            \ data scope."
+            \ sets the folder's owner directly. With a scoped token the owning user\
+            \ is attributed by the server from your credential and cannot be set to\
+            \ a different user; supplying one that conflicts is rejected."
           example: 550e8400-e29b-41d4-a716-446655440000
         scopes:
           type: array
           description: "The folder's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
             , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
-            \ are custom scopes you define (lowercase, 2-32 chars). Resolve a namespace's\
-            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
-            \ When supplied, this is the folder's COMPLETE scope declaration: for\
-            \ a token that stamps identity, entries must match the token's identity\
-            \ values, and an empty array creates a folder owned by the calling user\
-            \ alone (the private tier). Omit the field to inherit the token's full\
-            \ identity — the default. On update, omit to leave ownership unchanged,\
-            \ or supply the complete new selection (`[]` clears it)."
+            \ are custom scopes you define (lowercase, 2-32 chars). A `value` is 1-128\
+            \ characters: a letter or digit first, then letters, digits, `_` or `-`.\
+            \ Resolve a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            \ When supplied, this is the folder's COMPLETE scope declaration: each\
+            \ entry must fall inside the `data_scope` of a single clause of your credential\
+            \ that also grants this write — your identity supplies the DEFAULT value\
+            \ when you state none, it does not limit which value you may state. An\
+            \ empty array creates a folder owned by the calling user alone (the private\
+            \ tier), and requires a credential whose identity carries a user. Omit\
+            \ the field to inherit the token's full identity — the default. On update,\
+            \ omit to leave ownership unchanged, or supply the complete new selection\
+            \ (`[]` clears it)."
           example:
           - group:eng-team
           items:
@@ -8137,14 +8378,19 @@ components:
             description: "The folder's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
               , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
-              \ others are custom scopes you define (lowercase, 2-32 chars). Resolve\
-              \ a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
-              \ When supplied, this is the folder's COMPLETE scope declaration: for\
-              \ a token that stamps identity, entries must match the token's identity\
-              \ values, and an empty array creates a folder owned by the calling user\
-              \ alone (the private tier). Omit the field to inherit the token's full\
-              \ identity — the default. On update, omit to leave ownership unchanged,\
-              \ or supply the complete new selection (`[]` clears it)."
+              \ others are custom scopes you define (lowercase, 2-32 chars). A `value`\
+              \ is 1-128 characters: a letter or digit first, then letters, digits,\
+              \ `_` or `-`. Resolve a namespace's UUID from your own identifier with\
+              \ `GET /v1/entities/{namespace}?externalId=`. When supplied, this is\
+              \ the folder's COMPLETE scope declaration: each entry must fall inside\
+              \ the `data_scope` of a single clause of your credential that also grants\
+              \ this write — your identity supplies the DEFAULT value when you state\
+              \ none, it does not limit which value you may state. An empty array\
+              \ creates a folder owned by the calling user alone (the private tier),\
+              \ and requires a credential whose identity carries a user. Omit the\
+              \ field to inherit the token's full identity — the default. On update,\
+              \ omit to leave ownership unchanged, or supply the complete new selection\
+              \ (`[]` clears it)."
             example: "[\"group:eng-team\"]"
         expectedVersion:
           type: integer
@@ -8169,11 +8415,15 @@ components:
             $ref: "#/components/schemas/FolderResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of folders, returned as a `{data, nextCursor}` envelope.\
         \ `nextCursor` is an opaque cursor you pass as `startFrom` to fetch the next\
         \ page; it is null when no more pages remain."
@@ -8339,11 +8589,15 @@ components:
             $ref: "#/components/schemas/NamespaceResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of scope-namespace registrations as a `{data, nextCursor}`\
         \ envelope. `nextCursor` is an opaque cursor — pass it back as `startFrom`\
         \ to fetch the next page, or null when no more pages remain."
@@ -8759,12 +9013,33 @@ components:
         field:
           type: string
           description: "The name of the lookup field to match on, as declared on the\
-            \ record schema."
+            \ record schema. For a lookup declared over several fields, this is those\
+            \ field names joined with commas (`status,area`), and the values go in\
+            \ `values`."
           example: email
         value:
           type: string
-          description: The exact value to match against the lookup field.
+          description: The exact value to match against the lookup field. Mutually
+            exclusive with `values`.
           example: jane@example.com
+        values:
+          type: array
+          description: "The exact values to match, for a lookup declared over several\
+            \ fields — one value per field, in the order the lookup declares them.\
+            \ Mutually exclusive with `value`; a single-element list is identical\
+            \ to `value`. You may supply fewer values than the lookup declares as\
+            \ long as they are a leading run of its fields."
+          example:
+          - open
+          - billing
+          items:
+            type: string
+            description: "The exact values to match, for a lookup declared over several\
+              \ fields — one value per field, in the order the lookup declares them.\
+              \ Mutually exclusive with `value`; a single-element list is identical\
+              \ to `value`. You may supply fewer values than the lookup declares as\
+              \ long as they are a leading run of its fields."
+            example: "[\"open\",\"billing\"]"
       description: "A single equality lookup within a batch-lookup request: find the\
         \ records of a given type whose lookup field exactly matches a value."
     BatchLookupRequest:
@@ -8934,15 +9209,18 @@ components:
           description: "The record's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
             , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
-            \ are custom scopes you define (lowercase, 2-32 chars). Resolve a namespace's\
-            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
-            \ When supplied, this is the record's COMPLETE scope declaration: for\
-            \ a token that stamps identity, entries must match the token's identity\
-            \ values, and an empty array creates a record owned by the calling user\
-            \ alone (the private tier). Omit the field to inherit the token's full\
-            \ identity — the default. On update, omit to leave ownership unchanged,\
-            \ or supply the complete new selection (`[]` clears it). Filter lists\
-            \ by these values with `?scope=`."
+            \ are custom scopes you define (lowercase, 2-32 chars). A `value` is 1-128\
+            \ characters: a letter or digit first, then letters, digits, `_` or `-`.\
+            \ Resolve a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            \ When supplied, this is the record's COMPLETE scope declaration: each\
+            \ entry must fall inside the `data_scope` of a single clause of your credential\
+            \ that also grants this write — your identity supplies the DEFAULT value\
+            \ when you state none, it does not limit which value you may state. An\
+            \ empty array creates a row owned by the calling user alone (the private\
+            \ tier), and requires a credential whose identity carries a user. Omit\
+            \ the field to inherit the token's full identity — the default. On update,\
+            \ omit to leave ownership unchanged, or supply the complete new selection\
+            \ (`[]` clears it). Filter lists by these values with `?scope=`."
           example:
           - group:eng-team
           items:
@@ -8950,15 +9228,19 @@ components:
             description: "The record's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
               , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
-              \ others are custom scopes you define (lowercase, 2-32 chars). Resolve\
-              \ a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
-              \ When supplied, this is the record's COMPLETE scope declaration: for\
-              \ a token that stamps identity, entries must match the token's identity\
-              \ values, and an empty array creates a record owned by the calling user\
-              \ alone (the private tier). Omit the field to inherit the token's full\
-              \ identity — the default. On update, omit to leave ownership unchanged,\
-              \ or supply the complete new selection (`[]` clears it). Filter lists\
-              \ by these values with `?scope=`."
+              \ others are custom scopes you define (lowercase, 2-32 chars). A `value`\
+              \ is 1-128 characters: a letter or digit first, then letters, digits,\
+              \ `_` or `-`. Resolve a namespace's UUID from your own identifier with\
+              \ `GET /v1/entities/{namespace}?externalId=`. When supplied, this is\
+              \ the record's COMPLETE scope declaration: each entry must fall inside\
+              \ the `data_scope` of a single clause of your credential that also grants\
+              \ this write — your identity supplies the DEFAULT value when you state\
+              \ none, it does not limit which value you may state. An empty array\
+              \ creates a row owned by the calling user alone (the private tier),\
+              \ and requires a credential whose identity carries a user. Omit the\
+              \ field to inherit the token's full identity — the default. On update,\
+              \ omit to leave ownership unchanged, or supply the complete new selection\
+              \ (`[]` clears it). Filter lists by these values with `?scope=`."
             example: "[\"group:eng-team\"]"
         externalId:
           type: string
@@ -9005,24 +9287,31 @@ components:
         \ (PUT): omitted fields are preserved — sending null does not clear a field;\
         \ `payload` is replaced in full when supplied (it is not deep-merged); and\
         \ `typeName` and `schemaId` are immutable after creation and ignored on update."
-    RecordLookupResponse:
+    RecordLookupPage:
       type: object
       properties:
         data:
           type: array
-          description: "The records matched by this lookup, in lookup order (ascending\
-            \ by field value for range and prefix lookups; lookup-key order for exact-match\
-            \ lookups)."
+          description: "The items on this page, in the endpoint's natural order. Empty\
+            \ when there are no results."
           items:
             $ref: "#/components/schemas/RecordResponse"
         nextCursor:
           type: string
-          description: Opaque cursor for the next page. Pass it back as the `startFrom`
-            parameter to continue. Null when there are no more results. Treat it as
-            opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
-      description: A page of matching records plus an opaque cursor for the next page.
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
+      description: "A page of records matched by a structured-field lookup, as a `{data,\
+        \ nextCursor}` envelope. Records are returned in lookup order: ascending by\
+        \ field value for range and prefix lookups, and lookup-key order for exact-match\
+        \ lookups. `nextCursor` is an opaque cursor — pass it back as `startFrom`\
+        \ to fetch the next page, or null when no more pages remain."
     RecordLookupRequest:
       required:
       - field
@@ -9037,14 +9326,33 @@ components:
           type: string
           description: "Name of the lookup field declared on the schema. For a field\
             \ marked sensitive, this body variant is required (the GET variant rejects\
-            \ looking up by a sensitive value)."
+            \ looking up by a sensitive value). For a lookup declared over several\
+            \ fields, give those field names joined with commas (`status,area`) and\
+            \ put the values in `values`."
           example: ssn
         value:
           type: string
-          description: "Exact value to match. Mutually exclusive with `from`/`to`\
-            \ and `prefix`. Sensitive fields can only be looked up by exact value,\
-            \ and only through this body variant."
+          description: "Exact value to match. Mutually exclusive with `from`/`to`,\
+            \ `prefix` and `values`. Sensitive fields can only be looked up by exact\
+            \ value, and only through this body variant. For a lookup over several\
+            \ fields, use `values` instead."
           example: 123-45-6789
+        values:
+          type: array
+          description: |-
+            Exact values to match, for a lookup declared over several fields — one value per field, in the order the lookup declares them. Mutually exclusive with `value`; a single-element list is exactly `value` written uniformly.
+
+            You may supply fewer values than the lookup declares, as long as they are a leading run of its fields: on a lookup over `[status, area, owner]` you can match `status`, or `status` and `area`, but never `area` alone. Supplying fewer values returns the records grouped by the fields you left unspecified; `sortFrom`/`sortTo` then need every value, because sorting is only continuous within one fully specified combination.
+          example:
+          - open
+          - billing
+          items:
+            type: string
+            description: |-
+              Exact values to match, for a lookup declared over several fields — one value per field, in the order the lookup declares them. Mutually exclusive with `value`; a single-element list is exactly `value` written uniformly.
+
+              You may supply fewer values than the lookup declares, as long as they are a leading run of its fields: on a lookup over `[status, area, owner]` you can match `status`, or `status` and `area`, but never `area` alone. Supplying fewer values returns the records grouped by the fields you left unspecified; `sortFrom`/`sortTo` then need every value, because sorting is only continuous within one fully specified combination.
+            example: "[\"open\",\"billing\"]"
         from:
           type: string
           description: Inclusive lower bound for a range lookup (requires `to`; non-sensitive
@@ -9059,6 +9367,22 @@ components:
           description: "Prefix to match (string, non-sensitive fields only). Mutually\
             \ exclusive with `value` and `from`/`to`."
           example: jane
+        sortFrom:
+          type: string
+          description: "Inclusive lower bound on the lookup field's sort key, narrowing\
+            \ a `value` match to records whose sort key is at or after this point.\
+            \ Use with `value`; may be combined with `sortTo` to bound both ends.\
+            \ Give the bound in the same form as the sorted field's own values — epoch\
+            \ milliseconds when the lookup sorts by `createdAt` or `lastUpdated`.\
+            \ Records with no value for the sorted field are never included in a bounded\
+            \ window."
+          example: "1735689600000"
+        sortTo:
+          type: string
+          description: "Inclusive upper bound on the lookup field's sort key, narrowing\
+            \ a `value` match to records whose sort key is at or before this point.\
+            \ Use with `value`; may be combined with `sortFrom`."
+          example: "1738368000000"
         startFrom:
           type: string
           description: Pagination cursor — pass the `nextCursor` returned by the previous
@@ -9091,7 +9415,9 @@ components:
       description: "Request body for `POST /v1/records/lookup`. Carries the lookup\
         \ parameters in the body so a sensitive field's value never travels in the\
         \ URL query string. Provide exactly one lookup mode: `value` (exact match),\
-        \ `from` plus `to` (range), or `prefix`."
+        \ `values` (exact match on a lookup over several fields), `from` plus `to`\
+        \ (range), or `prefix`. A `value`/`values` lookup may additionally be narrowed\
+        \ by `sortFrom`/`sortTo`, which bound the lookup field's sort key."
     RecordPage:
       type: object
       properties:
@@ -9103,11 +9429,15 @@ components:
             $ref: "#/components/schemas/RecordResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of records in a `{data, nextCursor}` envelope: `data` is\
         \ the array of records on this page, and `nextCursor` is an opaque pagination\
         \ cursor. Pass it as `startFrom` to fetch the next page; it is null when no\
@@ -9198,26 +9528,51 @@ components:
           example: false
       description: "Defines a single field's type, validation, and indexing behavior."
     LookupDef:
-      required:
-      - fieldName
       type: object
       properties:
         fieldName:
           type: string
-          description: Name of the payload field to index.
+          description: "Name of the payload field to index. Supply either this or\
+            \ `fieldNames`, never both."
           example: email
+        fieldNames:
+          type: array
+          description: |-
+            Names of the payload fields to index together as a single lookup, so you can match on all of them at once (`status` AND `area`). Supply this instead of `fieldName`; between 2 and 3 fields.
+
+            **The order is significant, and re-declaring the same fields in a different order creates a SEPARATE lookup rather than reordering this one** — it is indexed independently, costs its own index, and matches only records written after you declare it. Choose the order deliberately: you can match on the first field alone, the first two together, and so on — any leading run of the list — but never on a later field by itself. Declare a separate lookup for that.
+
+            Query it by passing the field names joined with commas as `field` (`field=status,area`), plus one value per field you are matching. Supplying fewer values than the lookup declares returns the records grouped by the fields you left unspecified; `sortBy` then orders records within each group, not across them.
+
+            A lookup over several fields cannot set `unique`.
+          example:
+          - status
+          - area
+          items:
+            type: string
+            description: |-
+              Names of the payload fields to index together as a single lookup, so you can match on all of them at once (`status` AND `area`). Supply this instead of `fieldName`; between 2 and 3 fields.
+
+              **The order is significant, and re-declaring the same fields in a different order creates a SEPARATE lookup rather than reordering this one** — it is indexed independently, costs its own index, and matches only records written after you declare it. Choose the order deliberately: you can match on the first field alone, the first two together, and so on — any leading run of the list — but never on a later field by itself. Declare a separate lookup for that.
+
+              Query it by passing the field names joined with commas as `field` (`field=status,area`), plus one value per field you are matching. Supplying fewer values than the lookup declares returns the records grouped by the fields you left unspecified; `sortBy` then orders records within each group, not across them.
+
+              A lookup over several fields cannot set `unique`.
+            example: "[\"status\",\"area\"]"
         unique:
           type: boolean
           description: "If true, enforces that this field's value is unique within\
-            \ your account."
+            \ your account. Not available on a lookup over several fields."
           example: true
         rangeEnabled:
           type: boolean
           description: "If true, this field also supports ordered range and prefix\
             \ lookups (`from`/`to`/`prefix`) in addition to exact-match lookups. Range-enabled\
             \ fields are billed at the range-index rate. Cannot be set on a sensitive\
-            \ field, because a blind index is not orderable. This setting is locked\
-            \ once the field is created."
+            \ field, because a blind index is not orderable. Not available on a lookup\
+            \ over several fields, which is an exact-match index over its fields —\
+            \ declare the range lookup separately. This setting is locked once the\
+            \ field is created."
           example: false
         sortBy:
           type: string
@@ -9234,7 +9589,8 @@ components:
             \ do not count against the budget. This flag has no effect on a field\
             \ that fits within the budget."
           example: false
-      description: Declares a payload field that is indexed for direct lookup queries.
+      description: Declares a payload field — or several fields together — that is
+        indexed for direct lookup queries.
       example:
       - fieldName: email
         unique: true
@@ -9542,22 +9898,25 @@ components:
           type: string
           description: "Owning user — the Vectros-assigned UUID of a user in your\
             \ account. Optional; omit to create an account-wide shared schema. With\
-            \ an API key, this sets the schema's owner explicitly. With a scoped token,\
-            \ the user must match the token's identity claim (if set) or fall within\
-            \ the token's data scope."
+            \ an API key, this sets the schema's owner explicitly. With a scoped token\
+            \ the owning user is attributed by the server from your credential and\
+            \ cannot be set to a different user; supplying one that conflicts is rejected."
           example: 550e8400-e29b-41d4-a716-446655440000
         scopes:
           type: array
           description: "The schema's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
             , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
-            \ are custom scopes you define (lowercase, 2-32 chars). Resolve a namespace's\
-            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            \ are custom scopes you define (lowercase, 2-32 chars). A `value` is 1-128\
+            \ characters: a letter or digit first, then letters, digits, `_` or `-`.\
+            \ Resolve a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
             \ Optional — omit for an account-wide shared schema. When supplied, this\
-            \ is the schema's COMPLETE scope declaration: for a token that stamps\
-            \ identity, entries must match the token's identity values. On update,\
-            \ omit to leave ownership unchanged, or supply the complete new selection\
-            \ (`[]` clears it). Filter lists by these values with `?scope=`."
+            \ is the schema's COMPLETE scope declaration: each entry must fall inside\
+            \ the `data_scope` of a single clause of your credential that also grants\
+            \ this write — your identity supplies the DEFAULT value when you state\
+            \ none, it does not limit which value you may state. On update, omit to\
+            \ leave ownership unchanged, or supply the complete new selection (`[]`\
+            \ clears it). Filter lists by these values with `?scope=`."
           example:
           - group:eng-team
           items:
@@ -9565,14 +9924,17 @@ components:
             description: "The schema's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
               , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
-              \ others are custom scopes you define (lowercase, 2-32 chars). Resolve\
-              \ a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
-              \ Optional — omit for an account-wide shared schema. When supplied,\
-              \ this is the schema's COMPLETE scope declaration: for a token that\
-              \ stamps identity, entries must match the token's identity values. On\
-              \ update, omit to leave ownership unchanged, or supply the complete\
-              \ new selection (`[]` clears it). Filter lists by these values with\
-              \ `?scope=`."
+              \ others are custom scopes you define (lowercase, 2-32 chars). A `value`\
+              \ is 1-128 characters: a letter or digit first, then letters, digits,\
+              \ `_` or `-`. Resolve a namespace's UUID from your own identifier with\
+              \ `GET /v1/entities/{namespace}?externalId=`. Optional — omit for an\
+              \ account-wide shared schema. When supplied, this is the schema's COMPLETE\
+              \ scope declaration: each entry must fall inside the `data_scope` of\
+              \ a single clause of your credential that also grants this write — your\
+              \ identity supplies the DEFAULT value when you state none, it does not\
+              \ limit which value you may state. On update, omit to leave ownership\
+              \ unchanged, or supply the complete new selection (`[]` clears it).\
+              \ Filter lists by these values with `?scope=`."
             example: "[\"group:eng-team\"]"
         basedOn:
           type: string
@@ -9601,11 +9963,15 @@ components:
             $ref: "#/components/schemas/SchemaResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of record schemas as a `{data, nextCursor}` envelope. `nextCursor`\
         \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
         \ or null when no more pages remain."
@@ -9773,9 +10139,10 @@ components:
         scope:
           type: string
           description: "Restrict results to content carrying this scope value, in\
-            \ `namespace:value` form — for example `group:eng-team`, `org:<id>`, or\
-            \ `client:<id>`. Scope values are attached to records and documents at\
-            \ creation (the `scopes` field). Use `GET /v1/entities/{namespace}?externalId=`\
+            \ `namespace:value` form (a value is 1-128 chars: a letter or digit first,\
+            \ then letters, digits, `_` or `-`) — for example `group:eng-team`, `org:<id>`,\
+            \ or `client:<id>`. Scope values are attached to records and documents\
+            \ at creation (the `scopes` field). Use `GET /v1/entities/{namespace}?externalId=`\
             \ to look up an entity's ID from your own identifier."
           example: group:eng-team
         filters:
@@ -9992,24 +10359,34 @@ components:
           type: object
           additionalProperties:
             type: string
-            description: "Ownership fields automatically stamped onto resources created\
+            description: "Default ownership values stamped onto resources created\
               \ with this token. Optional. Keys are ownership dimensions: `userId`,\
               \ or any scope namespace in canonical `scope:<namespace>` form (e.g.\
               \ `scope:org`, `scope:client`, `scope:group`). Entity values must be\
               \ Vectros UUIDs — look them up with `GET /v1/users` or `GET /v1/entities/{namespace}`;\
-              \ custom-scope values are identifiers you define. The token holder cannot\
-              \ override these values when creating resources, but may narrow which\
-              \ of them stamp per create via the `scopes` request field."
+              \ custom-scope values are identifiers you define, of 1-128 characters:\
+              \ a letter or digit first, then letters, digits, `_` or `-`. These are\
+              \ the values used when a create does not state its own, and the values\
+              \ `${{ self.* }}` resolves to inside `data_scope`. They may be narrowed\
+              \ per create via the `scopes` request field. Identity does NOT bound\
+              \ what this token may stamp — `data_scope` does. To confine a token\
+              \ to its own value in a dimension, name that dimension in `data_scope`\
+              \ as `${{ self.scope.<namespace> }}`."
             example: "{\"userId\":\"550e8400-e29b-41d4-a716-446655440000\",\"scope:org\"\
               :\"6ba7b810-9dad-11d1-80b4-00c04fd430c8\"}"
-          description: "Ownership fields automatically stamped onto resources created\
-            \ with this token. Optional. Keys are ownership dimensions: `userId`,\
-            \ or any scope namespace in canonical `scope:<namespace>` form (e.g. `scope:org`,\
+          description: "Default ownership values stamped onto resources created with\
+            \ this token. Optional. Keys are ownership dimensions: `userId`, or any\
+            \ scope namespace in canonical `scope:<namespace>` form (e.g. `scope:org`,\
             \ `scope:client`, `scope:group`). Entity values must be Vectros UUIDs\
             \ — look them up with `GET /v1/users` or `GET /v1/entities/{namespace}`;\
-            \ custom-scope values are identifiers you define. The token holder cannot\
-            \ override these values when creating resources, but may narrow which\
-            \ of them stamp per create via the `scopes` request field."
+            \ custom-scope values are identifiers you define, of 1-128 characters:\
+            \ a letter or digit first, then letters, digits, `_` or `-`. These are\
+            \ the values used when a create does not state its own, and the values\
+            \ `${{ self.* }}` resolves to inside `data_scope`. They may be narrowed\
+            \ per create via the `scopes` request field. Identity does NOT bound what\
+            \ this token may stamp — `data_scope` does. To confine a token to its\
+            \ own value in a dimension, name that dimension in `data_scope` as `${{\
+            \ self.scope.<namespace> }}`."
           example:
             userId: 550e8400-e29b-41d4-a716-446655440000
             scope:org: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
@@ -10017,44 +10394,76 @@ components:
           type: object
           additionalProperties:
             type: array
-            description: "Restricts which records the token can access. Optional.\
-              \ Keys are ownership dimensions: `userId`, or any scope namespace in\
-              \ canonical `scope:<namespace>` form (e.g. `scope:org`, `scope:client`,\
-              \ `scope:group`); values are arrays of permitted values — the token\
-              \ can only access records whose dimension matches one of these values.\
-              \ Every non-null entity UUID must be a real entity in your account,\
-              \ and each dimension may be named only once. Include a JSON `null` in\
-              \ the array (e.g. `[\"uuid\", null]`) to ALSO grant access to records\
-              \ with no value in THAT dimension — an explicit per-dimension sentinel,\
-              \ NOT a wildcard. To grant access regardless of value, omit the key\
-              \ from the data scope entirely."
+            description: "Restricts which records the token can access, and authorizes\
+              \ where it may place them. Optional. Keys are ownership dimensions:\
+              \ `userId`, or any scope namespace in canonical `scope:<namespace>`\
+              \ form (e.g. `scope:org`, `scope:client`, `scope:group`); values are\
+              \ arrays of permitted values — the token can only access records whose\
+              \ dimension matches one of these values. Use `*` as the key to state\
+              \ a rule for every dimension not named explicitly; a named dimension\
+              \ always takes precedence over it. Every non-null entity UUID must be\
+              \ a real entity in your account, and each dimension may be named only\
+              \ once. Include a JSON `null` in the array (e.g. `[\"uuid\", null]`)\
+              \ to ALSO match records with no value in THAT dimension — an explicit\
+              \ per-dimension sentinel, NOT a wildcard. `${{ any }}` matches any value\
+              \ in the dimension but NOT records lacking one, so combine it with null\
+              \ to cover both; `${{ self.userId }}` / `${{ self.scope.<namespace>\
+              \ }}` resolve to the credential's own value per request; `${{ under.self.userId\
+              \ }}` / `${{ under.self.scope.<namespace> }}` match values whose immediate\
+              \ parent is the credential's own. Reads and writes differ where a dimension\
+              \ is OMITTED: reading is not narrowed by a dimension the data scope\
+              \ says nothing about, but writing a value into that dimension is not\
+              \ authorized by silence — name the dimension (or `*`) to place data\
+              \ there. An empty object therefore reads tenant-wide and authorizes\
+              \ no placement."
             example:
               scope:org:
               - 6ba7b810-9dad-11d1-80b4-00c04fd430c8
             items:
               type: string
-              description: "Restricts which records the token can access. Optional.\
-                \ Keys are ownership dimensions: `userId`, or any scope namespace\
-                \ in canonical `scope:<namespace>` form (e.g. `scope:org`, `scope:client`,\
-                \ `scope:group`); values are arrays of permitted values — the token\
-                \ can only access records whose dimension matches one of these values.\
-                \ Every non-null entity UUID must be a real entity in your account,\
-                \ and each dimension may be named only once. Include a JSON `null`\
-                \ in the array (e.g. `[\"uuid\", null]`) to ALSO grant access to records\
-                \ with no value in THAT dimension — an explicit per-dimension sentinel,\
-                \ NOT a wildcard. To grant access regardless of value, omit the key\
-                \ from the data scope entirely."
+              description: "Restricts which records the token can access, and authorizes\
+                \ where it may place them. Optional. Keys are ownership dimensions:\
+                \ `userId`, or any scope namespace in canonical `scope:<namespace>`\
+                \ form (e.g. `scope:org`, `scope:client`, `scope:group`); values are\
+                \ arrays of permitted values — the token can only access records whose\
+                \ dimension matches one of these values. Use `*` as the key to state\
+                \ a rule for every dimension not named explicitly; a named dimension\
+                \ always takes precedence over it. Every non-null entity UUID must\
+                \ be a real entity in your account, and each dimension may be named\
+                \ only once. Include a JSON `null` in the array (e.g. `[\"uuid\",\
+                \ null]`) to ALSO match records with no value in THAT dimension —\
+                \ an explicit per-dimension sentinel, NOT a wildcard. `${{ any }}`\
+                \ matches any value in the dimension but NOT records lacking one,\
+                \ so combine it with null to cover both; `${{ self.userId }}` / `${{\
+                \ self.scope.<namespace> }}` resolve to the credential's own value\
+                \ per request; `${{ under.self.userId }}` / `${{ under.self.scope.<namespace>\
+                \ }}` match values whose immediate parent is the credential's own.\
+                \ Reads and writes differ where a dimension is OMITTED: reading is\
+                \ not narrowed by a dimension the data scope says nothing about, but\
+                \ writing a value into that dimension is not authorized by silence\
+                \ — name the dimension (or `*`) to place data there. An empty object\
+                \ therefore reads tenant-wide and authorizes no placement."
               example: "{\"scope:org\":[\"6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]}"
-          description: "Restricts which records the token can access. Optional. Keys\
-            \ are ownership dimensions: `userId`, or any scope namespace in canonical\
-            \ `scope:<namespace>` form (e.g. `scope:org`, `scope:client`, `scope:group`);\
-            \ values are arrays of permitted values — the token can only access records\
-            \ whose dimension matches one of these values. Every non-null entity UUID\
-            \ must be a real entity in your account, and each dimension may be named\
-            \ only once. Include a JSON `null` in the array (e.g. `[\"uuid\", null]`)\
-            \ to ALSO grant access to records with no value in THAT dimension — an\
-            \ explicit per-dimension sentinel, NOT a wildcard. To grant access regardless\
-            \ of value, omit the key from the data scope entirely."
+          description: "Restricts which records the token can access, and authorizes\
+            \ where it may place them. Optional. Keys are ownership dimensions: `userId`,\
+            \ or any scope namespace in canonical `scope:<namespace>` form (e.g. `scope:org`,\
+            \ `scope:client`, `scope:group`); values are arrays of permitted values\
+            \ — the token can only access records whose dimension matches one of these\
+            \ values. Use `*` as the key to state a rule for every dimension not named\
+            \ explicitly; a named dimension always takes precedence over it. Every\
+            \ non-null entity UUID must be a real entity in your account, and each\
+            \ dimension may be named only once. Include a JSON `null` in the array\
+            \ (e.g. `[\"uuid\", null]`) to ALSO match records with no value in THAT\
+            \ dimension — an explicit per-dimension sentinel, NOT a wildcard. `${{\
+            \ any }}` matches any value in the dimension but NOT records lacking one,\
+            \ so combine it with null to cover both; `${{ self.userId }}` / `${{ self.scope.<namespace>\
+            \ }}` resolve to the credential's own value per request; `${{ under.self.userId\
+            \ }}` / `${{ under.self.scope.<namespace> }}` match values whose immediate\
+            \ parent is the credential's own. Reads and writes differ where a dimension\
+            \ is OMITTED: reading is not narrowed by a dimension the data scope says\
+            \ nothing about, but writing a value into that dimension is not authorized\
+            \ by silence — name the dimension (or `*`) to place data there. An empty\
+            \ object therefore reads tenant-wide and authorizes no placement."
           example:
             scope:org:
             - 6ba7b810-9dad-11d1-80b4-00c04fd430c8
@@ -10255,11 +10664,15 @@ components:
             $ref: "#/components/schemas/UserResponse"
         nextCursor:
           type: string
-          description: An opaque cursor for the next page. Pass it back as the `startFrom`
-            query parameter to continue paging; null when there are no more results.
-            Treat it as opaque — do not parse or construct it.
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
           nullable: true
-          example: 550e8400-e29b-41d4-a716-446655440000
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
       description: "A page of users as a `{data, nextCursor}` envelope. `nextCursor`\
         \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
         \ or null when no more pages remain."
