@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.38.0"
+  version: "0.39.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -200,7 +200,12 @@ paths:
         \ idempotent on the combination of tenant, context, user, and key name: re-issuing\
         \ the same request returns the existing key WITHOUT re-disclosing its raw\
         \ secret. The raw key is returned ONLY in this response — store it securely,\
-        \ as it cannot be retrieved again. Requires the `keys:c` scope."
+        \ as it cannot be retrieved again. Requires the `keys:c` scope. If you use\
+        \ a scoped credential, `keys:c` alone is not sufficient: because the minted\
+        \ key is durably bound to the profile you name, the profile's effective scopes\
+        \ may not exceed your own, and you may only mint against a profile whose `identityOverrides`\
+        \ values your own identity holds. A root API key (`sk_`) is exempt from both\
+        \ bounds."
       operationId: createScopedKey
       requestBody:
         content:
@@ -225,9 +230,12 @@ paths:
                 $ref: "#/components/schemas/ScopedKeyResponse"
         "400":
           description: "Validation error — for example, a missing required field,\
-            \ or your plan's active-key limit has been reached."
+            \ or your plan's active-key limit has been reached, or the referenced\
+            \ profile names a `roleId` that no longer exists in its context."
         "403":
-          description: Your token lacks the `keys:c` scope.
+          description: "Your token lacks the `keys:c` scope, or — when minting with\
+            \ a scoped credential — the referenced profile's effective scopes exceed\
+            \ your own, or it carries an identity value you do not hold yourself."
         "404":
           description: "The referenced context, user, or access profile does not exist\
             \ in your account."
@@ -512,7 +520,8 @@ paths:
                 $ref: "#/components/schemas/AccessProfileResponse"
         "400":
           description: "Invalid principalId, or both/neither of scopes and roleId\
-            \ were provided, or an identityOverrides key is not permitted."
+            \ were provided, or `roleId` does not reference a role that exists in\
+            \ this context, or an identityOverrides key is not permitted."
         "404":
           description: No app context exists with this contextId.
         "403":
@@ -808,8 +817,9 @@ paths:
         \ are bounded twice: you may only set a value your own identity holds, and\
         \ you may only change or clear a value the profile already holds if that value\
         \ is yours as well. Repointing or clearing another principal's established\
-        \ identity therefore returns 403. A root API key (`sk_`) is exempt. Requires\
-        \ the `profiles:u` scope."
+        \ identity therefore returns 403. A root API key (`sk_`) is exempt. If you\
+        \ set `roleId`, it must reference a role that already exists in this context.\
+        \ Requires the `profiles:u` scope."
       operationId: updateAccessProfile
       parameters:
       - name: contextId
@@ -835,6 +845,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AccessProfileResponse"
+        "400":
+          description: "Invalid contextId or principalId, or a missing request body,\
+            \ or `roleId` does not reference a role that exists in this context, or\
+            \ an identityOverrides key is not permitted."
         "404":
           description: No access profile exists with this principalId in the given
             context.
@@ -2995,6 +3009,172 @@ paths:
           description: No folder with the given ID exists in your account.
       security:
         - BearerAuth: []
+  /v1/auth/issuers/{issuerId}:
+
+    get:
+      tags:
+      - Auth
+      summary: Get a registered issuer
+      description: Retrieves a single registered issuer by issuerId. Requires a root
+        API key or the bootstrap's provisioning capability.
+      operationId: getIssuer
+      parameters:
+      - name: issuerId
+        in: path
+        description: The issuer's slug.
+        required: true
+        schema:
+          type: string
+        example: auth0-prod
+      responses:
+        "200":
+          description: The requested issuer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuerResponse"
+        "403":
+          description: Root API key or provisioning capability required.
+        "404":
+          description: No issuer with this issuerId is registered in your tenant.
+      security:
+        - BearerAuth: []
+    delete:
+      tags:
+      - Auth
+      summary: Delete a registered issuer
+      description: "Deregisters a trusted third-party IdP issuer. Requires a root\
+        \ API key or the bootstrap's provisioning capability. Unconditional — unlike\
+        \ some other registry deletes on this API, this does not check for or block\
+        \ on any downstream reference. Any user account already created via this issuer\
+        \ (by a prior self-signup or accepted invite) is NOT deleted or modified,\
+        \ but that user can no longer obtain a NEW token this way once you deregister\
+        \ the issuer — every `POST /v1/auth/token/exchange` call against it will 404,\
+        \ with no distinction between an unknown issuer and one you just deregistered.\
+        \ Register a replacement issuer, or restore this one, before your users' current\
+        \ tokens expire if you want their access to continue uninterrupted."
+      operationId: deleteIssuer
+      parameters:
+      - name: issuerId
+        in: path
+        description: The issuer's slug.
+        required: true
+        schema:
+          type: string
+        example: auth0-prod
+      responses:
+        "204":
+          description: The issuer registration was deleted.
+        "403":
+          description: Root API key or provisioning capability required.
+        "404":
+          description: No issuer with this issuerId is registered in your tenant.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+  /v1/auth/issuers:
+
+    get:
+      tags:
+      - Auth
+      summary: List registered issuers
+      description: "Returns the issuers registered in your tenant. Requires a root\
+        \ API key or the bootstrap's provisioning capability. Returns a `{data, nextCursor}`\
+        \ envelope."
+      operationId: listIssuers
+      parameters:
+      - name: startFrom
+        in: query
+        description: Pagination cursor from a previous page's `nextCursor`.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Maximum registrations per page (1-100; defaults to 20).
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+          format: int64
+          default: 20
+      responses:
+        "200":
+          description: "A page of issuers as a `{data, nextCursor}` envelope."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuerPage"
+        "403":
+          description: Root API key or provisioning capability required.
+      security:
+        - BearerAuth: []
+    post:
+      tags:
+      - Auth
+      summary: Register a trusted BYO-IdP issuer
+      description: "Registers a trusted third-party IdP issuer that BYO-IdP token\
+        \ exchange (`POST /v1/auth/token/exchange`) may accept a `subject_token` from.\
+        \ Requires a root API key or the CLI bootstrap's provisioning capability —\
+        \ never an ordinary partner-grantable scope. Idempotent by `issuerId` within\
+        \ your tenant; the `(issuer, audience)` pair must not already be registered\
+        \ by a different issuerId/tenant."
+      operationId: registerIssuer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IssuerRequest"
+        required: true
+      responses:
+        "201":
+          description: The issuer was registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuerResponse"
+        "200":
+          description: An issuer with this issuerId already exists in your tenant;
+            the existing registration is returned unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuerResponse"
+        "400":
+          description: "Malformed request, invalid issuerId/contextId format, unknown\
+            \ contextId, or the (issuer, audience) pair is already registered."
+        "403":
+          description: Root API key or provisioning capability required.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
   /v1/models:
 
     get:
@@ -5005,6 +5185,57 @@ paths:
                 type: integer
       security:
         - BearerAuth: []
+  /v1/users/exists-by-email:
+
+    get:
+      tags:
+      - Identity
+      summary: Check whether a user with this email exists in an app context
+      description: "Answers \"does a user with this email hold an ACTIVE access profile\
+        \ in this app context\" — a narrow existence check, not a general lookup.\
+        \ `exists` is false for a member whose access to this context has been suspended,\
+        \ not only for a member who was never granted it. The answer is scoped to\
+        \ the `contextId` you supply: it does not reveal whether the email exists\
+        \ elsewhere in your tenant or account, only whether it belongs to an active\
+        \ member of the named context. Returns `{exists, userId, status}` — never\
+        \ the full user record — so a caller asking \"does X exist\" cannot receive\
+        \ that user's payload/schema binding/etc. as a side effect. Useful for resolving\
+        \ an email you were handed (for example, by an org-admin adding an existing\
+        \ member to another org) to a `userId`, without paging through the full context\
+        \ membership. Requires the `users:r` scope."
+      operationId: userExistsByEmail
+      parameters:
+      - name: email
+        in: query
+        description: The email address to check. Matched case-insensitively.
+        schema:
+          type: string
+        example: user@example.com
+      - name: contextId
+        in: query
+        description: "The app context to check membership in. A context-confined credential\
+          \ (a scoped token or key bound to one context) may only name its own bound\
+          \ context — naming any other context is rejected with a uniform 403, before\
+          \ the existence check runs."
+        schema:
+          type: string
+        example: myapp
+      responses:
+        "200":
+          description: The check completed. `exists` is `false` (with no other fields)
+            when no active member of the named context has that email.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserExistsResponse"
+        "400":
+          description: "'email' or 'contextId' is missing, or 'contextId' is not a\
+            \ validly formatted app context id."
+        "403":
+          description: "Your token lacks the `users:r` scope, or is bound to a different\
+            \ app context than the one requested."
+      security:
+        - BearerAuth: []
   /v1/users/{id}/versions:
 
     get:
@@ -5163,6 +5394,76 @@ paths:
                 type: integer
       security:
         - BearerAuth: []
+  /v1/auth/token/exchange:
+
+    post:
+      tags:
+      - Auth
+      summary: Exchange a third-party IdP token for a Vectros scoped token
+      description: "RFC 8693 OAuth 2.0 Token Exchange. Trades a JWT issued by a third-party\
+        \ identity provider you've registered (`POST /v1/auth/issuers`) for a Vectros\
+        \ `st_*` scoped bearer token — no Vectros credential required to call this\
+        \ endpoint. The exchanged token's scope is resolved entirely server-side from\
+        \ the matched user's access profile; this endpoint accepts no caller-supplied\
+        \ scope, resource, or audience parameter (RFC 8693 §2.1's `resource`/`audience`/`scope`\
+        \ are not used in v1 — the registered `(issuer, audience)` pair alone pins\
+        \ the target tenant and app context). On a first-time login (no existing Vectros\
+        \ identity for this subject), two opt-in binding paths exist: `invite_token`\
+        \ (a `PENDING` sub-user invitation), and — if the registration declares one\
+        \ or more self-signup policies — `signup_type` (a brand-new user is created\
+        \ and bound to the policy's configured role). If `invite_token` is present\
+        \ at all, it is the ONLY path tried — a failed invite never falls through\
+        \ to self-signup. Neither field is required for a subject with an existing\
+        \ identity. Uses the OAuth-standard error envelope (`{\"error\":..., \"error_description\"\
+        :...}`, RFC 6749 §5.2), NOT this API's usual `{\"message\":...}` shape — its\
+        \ client is generic OAuth tooling, not the Vectros SDK."
+      operationId: exchangeToken
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenExchangeRequest"
+        required: true
+      responses:
+        "200":
+          description: The token was exchanged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenExchangeResponse"
+              example:
+                access_token: st_eyJ...
+                issued_token_type: urn:ietf:params:oauth:token-type:access_token
+                token_type: Bearer
+                expires_in: 3600
+        "400":
+          description: "Malformed request, missing subject_token, unparseable JWT,\
+            \ unsupported subject_token_type, or an unrecognized grant_type."
+        "401":
+          description: "subject_token failed verification — bad signature, expired,\
+            \ iss/aud mismatch, or the registered issuer's JWKS could not be fetched.\
+            \ The body is deliberately generic and does not distinguish these."
+        "403":
+          description: "subject_token verified, but its subject resolves to no existing\
+            \ Vectros user, matches no pending invite, and either no self-signup policy\
+            \ is configured or signup_type matched none of the configured ones."
+        "404":
+          description: The iss/aud pair names no registered issuer.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
   /v1/chat:
 
     post:
@@ -5830,6 +6131,15 @@ components:
           type: string
           description: When the profile was last modified (ISO-8601 UTC).
           example: 2024-01-15T09:35:00Z
+        email:
+          type: string
+          description: "The principal's email, when resolvable. Set only for a `usr_`\
+            \ principal with a matching user record in your tenant; null for a `key_`\
+            \ principal (a scoped API key has no email), a `usr_` principal that could\
+            \ not be resolved (for example, the user was deleted), or when your token\
+            \ lacks the `users:r` scope in addition to this endpoint's own scope (email\
+            \ is user data, gated the same as GET /v1/users)."
+          example: alice@example.com
       description: An access profile — the permission row for one principal within
         one app context.
     ScopeClause:
@@ -5846,15 +6156,15 @@ components:
             \ it, sensitive fields are masked at the response boundary. The standard\
             \ catalog is '*' (wildcard), 'keys:crd' (manage scoped API keys), 'profiles:cru'\
             \ (manage access profiles), 'app-contexts:cru', 'users:crud' (manage your\
-            \ tenant's own users, including sub-user invitations), 'logs:r', and the\
-            \ literal 'create_own_scoped_key'; you may add custom 'resource:ops' verbs\
-            \ for application-specific resources. Bare verbs like 'read'/'write'/'delete'\
-            \ are NOT grantable — use the resource:ops form. A ':qualifier' segment\
-            \ is honored only where it actually narrows the grant — 'records'/'entities'\
-            \ correlate it for every op; 'documents'/'users' correlate it ONLY for\
-            \ the 's' op (e.g. 'documents:s:invoice' restricts sensitive-field reveal\
-            \ to that type; a qualifier on 'documents:r' or any other resource/op\
-            \ combination is rejected rather than silently ignored)."
+            \ tenant's own users, including sub-user invitations), and 'logs:r'; you\
+            \ may add custom 'resource:ops' verbs for application-specific resources.\
+            \ Bare verbs like 'read'/'write'/'delete' are NOT grantable — use the\
+            \ resource:ops form. A ':qualifier' segment is honored only where it actually\
+            \ narrows the grant — 'records'/'entities' correlate it for every op;\
+            \ 'documents'/'users' correlate it ONLY for the 's' op (e.g. 'documents:s:invoice'\
+            \ restricts sensitive-field reveal to that type; a qualifier on 'documents:r'\
+            \ or any other resource/op combination is rejected rather than silently\
+            \ ignored)."
           example:
           - records:cru
           - search:r
@@ -5868,15 +6178,14 @@ components:
               \ standard catalog is '*' (wildcard), 'keys:crd' (manage scoped API\
               \ keys), 'profiles:cru' (manage access profiles), 'app-contexts:cru',\
               \ 'users:crud' (manage your tenant's own users, including sub-user invitations),\
-              \ 'logs:r', and the literal 'create_own_scoped_key'; you may add custom\
-              \ 'resource:ops' verbs for application-specific resources. Bare verbs\
-              \ like 'read'/'write'/'delete' are NOT grantable — use the resource:ops\
-              \ form. A ':qualifier' segment is honored only where it actually narrows\
-              \ the grant — 'records'/'entities' correlate it for every op; 'documents'/'users'\
-              \ correlate it ONLY for the 's' op (e.g. 'documents:s:invoice' restricts\
-              \ sensitive-field reveal to that type; a qualifier on 'documents:r'\
-              \ or any other resource/op combination is rejected rather than silently\
-              \ ignored)."
+              \ and 'logs:r'; you may add custom 'resource:ops' verbs for application-specific\
+              \ resources. Bare verbs like 'read'/'write'/'delete' are NOT grantable\
+              \ — use the resource:ops form. A ':qualifier' segment is honored only\
+              \ where it actually narrows the grant — 'records'/'entities' correlate\
+              \ it for every op; 'documents'/'users' correlate it ONLY for the 's'\
+              \ op (e.g. 'documents:s:invoice' restricts sensitive-field reveal to\
+              \ that type; a qualifier on 'documents:r' or any other resource/op combination\
+              \ is rejected rather than silently ignored)."
             example: "[\"records:cru\",\"search:r\"]"
         data_scope:
           type: object
@@ -8427,6 +8736,181 @@ components:
       description: "A page of folders, returned as a `{data, nextCursor}` envelope.\
         \ `nextCursor` is an opaque cursor you pass as `startFrom` to fetch the next\
         \ page; it is null when no more pages remain."
+    IssuerResponse:
+      type: object
+      properties:
+        issuerId:
+          type: string
+          description: This issuer's slug within your tenant.
+          example: auth0-prod
+        issuer:
+          type: string
+          description: The IdP's `iss` claim value.
+          example: https://your-tenant.us.auth0.com/
+        jwksUri:
+          type: string
+          description: The IdP's remote JWKS endpoint.
+          example: https://your-tenant.us.auth0.com/.well-known/jwks.json
+        audience:
+          type: string
+          description: The required `aud` claim value.
+          example: https://api.your-app.example.com
+        contextId:
+          type: string
+          description: The app context an exchanged token targets.
+          example: casework
+        subClaim:
+          type: string
+          description: The subject-identifier claim.
+          example: sub
+        emailClaim:
+          type: string
+          description: The subject-email claim.
+          example: email
+        status:
+          type: string
+          description: '`active` or `suspended`. A suspended issuer is registered
+            but its tokens are no longer accepted for exchange.'
+          example: active
+        createdAt:
+          type: string
+          description: "Timestamp when the issuer was registered, as an ISO-8601 UTC\
+            \ timestamp."
+          example: 2026-08-07T09:30:00Z
+        created:
+          type: boolean
+          description: "`true` if this call registered a new issuer, `false` if issuerId\
+            \ already existed in your tenant and the existing registration was returned\
+            \ unchanged. Only present on the create response (POST /v1/auth/issuers);\
+            \ absent on reads. The HTTP status mirrors it — 201 when created, 200\
+            \ when an existing registration was returned."
+          example: true
+        selfSignupPolicies:
+          type: array
+          description: "Configured self-service signup policies, if any. Absent (not\
+            \ an empty list) when self-signup is not configured for this issuer."
+          items:
+            $ref: "#/components/schemas/SelfSignupPolicy"
+      description: A registered trusted third-party IdP issuer.
+    SelfSignupPolicy:
+      required:
+      - role_id
+      - signup_type
+      type: object
+      properties:
+        signup_type:
+          type: string
+          description: "The plain slug the frontend and the blueprint agree on to\
+            \ select this policy entry (e.g. 'practitioner', 'client'). Same grammar\
+            \ as a role id (lowercase letter first, then a-z 0-9 -, 3-31 chars). Caller-supplied\
+            \ at exchange time via the request's signup_type field; omitted on the\
+            \ request means 'the sole entry', valid only when this list has exactly\
+            \ one."
+          example: practitioner
+        role_id:
+          type: string
+          description: "The role a brand-new self-signup caller matching this signupType\
+            \ is bound to. Must never resolve to a role carrying elevated (provisioning\
+            \ or wildcard) scope — checked when you register this policy (skipped\
+            \ if the role doesn't exist yet) and always checked again, unskippable,\
+            \ at the moment a caller actually signs up."
+          example: practitioner-member
+      description: "Opt-in self-service signup: a list of {signup_type, role_id} pairs.\
+        \ When a first-time exchange caller presents no invite token but names a signup_type\
+        \ matching one of these (or omits signup_type and exactly one entry exists),\
+        \ a brand-new user is created and bound to that entry's role — no invite required.\
+        \ Every entry must, by construction, be something you're willing to grant\
+        \ to ANY caller who can present a token from this issuer: no entry may target\
+        \ a role carrying elevated (provisioning or wildcard) scope — rejected. Omit\
+        \ entirely to leave self-signup disabled (the default)."
+    IssuerPage:
+      type: object
+      properties:
+        data:
+          type: array
+          description: "The items on this page, in the endpoint's natural order. Empty\
+            \ when there are no results."
+          items:
+            $ref: "#/components/schemas/IssuerResponse"
+        nextCursor:
+          type: string
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
+          nullable: true
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
+      description: "A page of registered issuers as a `{data, nextCursor}` envelope.\
+        \ `nextCursor` is an opaque cursor — pass it back as `startFrom` to fetch\
+        \ the next page, or null when no more pages remain."
+    IssuerRequest:
+      required:
+      - audience
+      - contextId
+      - issuer
+      - issuerId
+      - jwksUri
+      type: object
+      properties:
+        issuerId:
+          type: string
+          description: "Short slug identifying this issuer within your tenant: 3-31\
+            \ characters, a lowercase letter first, then lowercase letters, digits,\
+            \ or hyphens. Immutable once registered."
+          example: auth0-prod
+        issuer:
+          type: string
+          description: "The IdP's `iss` claim value, exactly as it appears in tokens\
+            \ it issues."
+          example: https://your-tenant.us.auth0.com/
+        jwksUri:
+          type: string
+          description: "The IdP's remote JWKS endpoint, used to verify presented tokens'\
+            \ signatures."
+          example: https://your-tenant.us.auth0.com/.well-known/jwks.json
+        audience:
+          type: string
+          description: The `aud` claim value this contract requires a presented subject_token
+            to carry. Must be globally unique in combination with `issuer` — use a
+            distinct audience per environment/context sharing one IdP account (most
+            OIDC providers support this as an ordinary per-API/application default).
+          example: https://api.your-app.example.com
+        contextId:
+          type: string
+          description: Which of your app contexts an exchanged token targets. Must
+            be an existing app context (create it first via `POST /v1/app-contexts`).
+          example: casework
+        subClaim:
+          type: string
+          description: The claim in the IdP's token that carries the subject identifier.
+            Defaults to `sub` if omitted.
+          example: sub
+          default: sub
+        emailClaim:
+          type: string
+          description: "The claim in the IdP's token that carries the subject's email,\
+            \ used for first-login invite matching. Defaults to `email` if omitted."
+          example: email
+          default: email
+        selfSignupPolicies:
+          type: array
+          description: "Opt-in self-service signup: a list of {signup_type, role_id}\
+            \ pairs. When a first-time exchange caller presents no invite token but\
+            \ names a signup_type matching one of these (or omits signup_type and\
+            \ exactly one entry exists), a brand-new user is created and bound to\
+            \ that entry's role — no invite required. Every entry must, by construction,\
+            \ be something you're willing to grant to ANY caller who can present a\
+            \ token from this issuer: no entry may target a role carrying elevated\
+            \ (provisioning or wildcard) scope — rejected. Omit entirely to leave\
+            \ self-signup disabled (the default)."
+          items:
+            $ref: "#/components/schemas/SelfSignupPolicy"
+      description: Request body for registering a trusted third-party IdP issuer that
+        BYO-IdP token exchange (`POST /v1/auth/token/exchange`) may accept a subject_token
+        from.
     ModelInfo:
       required:
       - availableOn
@@ -8712,8 +9196,10 @@ components:
           - token
         principalKeyId:
           type: string
-          description: Stable identifier for your credential. For `sk_*` and `ssk_*`
-            keys this is the key id; for `st_*` tokens it is the token's JWT id (jti).
+          description: "Stable identifier for your credential. For `sk_*` and `ssk_*`\
+            \ keys this is the key id; for `st_*` tokens it is the token's JWT id\
+            \ (`jti`), which is unique per mint — two tokens minted for the same user\
+            \ report different values."
           example: ssk_live_xyz
         principalLabel:
           type: string
@@ -10496,8 +10982,8 @@ components:
           $ref: "#/components/schemas/ScopeRequest"
         expiresInSeconds:
           type: integer
-          description: "How long the token remains valid, in seconds. Maximum 86400\
-            \ (24 hours); defaults to 3600 (1 hour)."
+          description: "How long the token remains valid, in seconds. Maximum 3600\
+            \ (1 hour), which is also the default."
           format: int32
           example: 3600
       description: Request body for minting a scoped token.
@@ -10676,6 +11162,32 @@ components:
       description: "A page of users as a `{data, nextCursor}` envelope. `nextCursor`\
         \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
         \ or null when no more pages remain."
+    UserExistsResponse:
+      required:
+      - exists
+      type: object
+      properties:
+        exists:
+          type: boolean
+          description: Whether a user with the given email holds an access profile
+            in the given app context.
+          example: true
+        userId:
+          type: string
+          description: The matching user's Vectros-assigned UUID. Present only when
+            `exists` is true.
+          example: 550e8400-e29b-41d4-a716-446655440000
+        status:
+          type: string
+          description: The matching user's lifecycle status. Present only when `exists`
+            is true.
+          example: ACTIVE
+          enum:
+          - ACTIVE
+          - SUSPENDED
+          - PENDING
+      description: "Narrow existence signal for a user lookup by email, scoped to\
+        \ a single app context."
     CreateInviteResponse:
       type: object
       properties:
@@ -10787,6 +11299,69 @@ components:
           example: true
           default: true
       description: Request body for inviting a sub-user to one of your app contexts.
+    TokenExchangeResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: The minted Vectros scoped token.
+          example: st_eyJ...
+        issued_token_type:
+          type: string
+          description: Always `urn:ietf:params:oauth:token-type:access_token`.
+          example: urn:ietf:params:oauth:token-type:access_token
+        token_type:
+          type: string
+          description: Always `Bearer`.
+          example: Bearer
+        expires_in:
+          type: integer
+          description: Seconds until expiry.
+          format: int32
+          example: 3600
+      description: RFC 8693 token-exchange success response.
+    TokenExchangeRequest:
+      required:
+      - grant_type
+      - subject_token
+      - subject_token_type
+      type: object
+      properties:
+        grant_type:
+          type: string
+          description: Must be exactly `urn:ietf:params:oauth:grant-type:token-exchange`.
+          example: urn:ietf:params:oauth:grant-type:token-exchange
+        subject_token:
+          type: string
+          description: The IdP-issued JWT to exchange for a Vectros-scoped token.
+        subject_token_type:
+          type: string
+          description: "The type of `subject_token`. Accepted: `urn:ietf:params:oauth:token-type:jwt`\
+            \ and `urn:ietf:params:oauth:token-type:id_token`."
+          example: urn:ietf:params:oauth:token-type:jwt
+        requested_token_type:
+          type: string
+          description: Accepted-and-ignored if present (this contract mints exactly
+            one token shape). Optional.
+          example: urn:ietf:params:oauth:token-type:access_token
+        invite_token:
+          type: string
+          description: "The `inv_*` invitation token from a sub-user invite email,\
+            \ when this exchange is a first-time login for a subject with no existing\
+            \ Vectros identity yet (TOKEN-EXCHANGE-CONTRACT.md §6). Not part of RFC\
+            \ 8693 — a Vectros-specific extension field, additive to the standard\
+            \ grant. Omit for a subject that already has an active Vectros identity;\
+            \ required to complete first login for one that doesn't. Delivered to\
+            \ the end user out-of-band (the same invite-email link flow as today),\
+            \ never generated by this endpoint."
+        signup_type:
+          type: string
+          description: |-
+            Selects which self-service signup policy to apply for a first-time login with NO invite token, when the registered issuer declares one or more `selfSignupPolicies` (`POST /v1/auth/issuers`). A plain client-supplied selector, not a value your identity provider needs to assert. Omit when the issuer has exactly one policy entry (the unambiguous default); required to pick among multiple. Ignored entirely if the caller already has an existing Vectros identity, presented an `invite_token`, or the issuer offers no self-signup policies at all.
+
+            This does NOT reopen the caller-supplied-scope concern named above: `signup_type` never selects a privilege level, only WHICH pre-authored, already-open policy entry to bind to. Every `selfSignupPolicies` entry is, by construction, something you already decided ANY caller who can present a token from this issuer may have — self-service, no invite, is exactly that decision, so there is no privilege differential between entries for a caller to escalate into by naming a different one than your frontend intended. The platform independently enforces that this is actually true (no entry may ever resolve to an elevated role) regardless of what this field's value is. Because "any caller who can present a token from this issuer" is the real trust boundary, self-signup is only as narrow as your issuer's own audience — it is not a substitute for restricting who can obtain a token from your identity provider in the first place.
+          example: practitioner
+      description: RFC 8693 token-exchange request.
     ChatStreamEvent:
       type: object
       description: A single Server-Sent Event from `POST /v1/chat`. The `type` field
