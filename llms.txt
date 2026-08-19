@@ -12,7 +12,7 @@ The current surface spans: Documents and structured Records (with schema-defined
 indexing, lookup/range queries, and folders), hybrid Search (BM25 + vector, RRF
 fusion), grounded inference (chat, RAG, document-ask, model catalog), the
 Identity plane (users, plus identity entities in any namespace — `org` and
-`client` are built in, and you can register your own), per-customer isolation
+`client` are reserved names, and you register any namespace before use), per-customer isolation
 with scoped keys and app-contexts, read-access logging, GDPR erasure and export,
 and billing/usage reporting.
 
@@ -101,9 +101,14 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 
 5. **The Identity Plane (users + namespaced entities):**
    - Two dimensions: users (`POST /v1/users`) and identity entities
-     (`POST /v1/entities/{namespace}`). `org` and `client` are built-in
-     namespaces — so an organization is `POST /v1/entities/org`. There are no
-     `/v1/orgs` or `/v1/clients` routes.
+     (`POST /v1/entities/{namespace}`). `org` and `client` are reserved
+     namespace names — so an organization is `POST /v1/entities/org`. There
+     are no `/v1/orgs` or `/v1/clients` routes. **Register both explicitly
+     before use** (root key, same shape as registering your own namespace
+     below, e.g. `{"namespace":"org","entityBacked":true,"specificityRank":1000}`
+     and `client` at `specificityRank:2000`); `POST /v1/entities/org`/`client`
+     returns `400` until you do. A one-time step per account; once
+     registered, both work identically to any other namespace.
    - Register your own namespaces (`team`, `project`, …) with
      `POST /v1/namespaces` (`{"namespace":"team","entityBacked":true,"specificityRank":10}`,
      root key only). `specificityRank` is a required, account-unique integer position
@@ -112,6 +117,15 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      `entityBacked` defaults to `false` — a false/unregistered namespace
      is a free-string scope value with no entities route, so set it `true` if you
      want entities. Entity-backed values are then existence-checked on write.
+   - **Placement:** a registration is TENANT-WIDE by default (its entities are
+     shared by every app context, same as `org`/`client`). Pass `?contextId=<id>`
+     on `POST /v1/namespaces` to make it CONTEXT-OWNED instead: its entities
+     live entirely inside that one app context, invisible to every other
+     context, with no shared configuration. A registration's `contextId` is
+     fixed once set and cannot be changed later. `?contextId=` then applies to
+     every `/v1/entities/{namespace}` operation, not just creation (create,
+     read, update, delete, versions, lookup): required for a context-owned
+     namespace, rejected for a tenant-wide one.
    - **Idempotency:** both require an `externalId`. POSTing with an existing
      `externalId` safely returns the existing record — no 409 Conflict, safe to
      retry. Pass `?upsert=true` on an entity create to overwrite instead — that
@@ -164,6 +178,31 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      `limit` (1–100) plus an explicit `hasMore` boolean on the response — true
      when more results exist past this page. `totalResults` is an approximate
      matching-pool size, not a reliable paging signal; use `hasMore` instead.
+   - A context-confined credential's `GET /v1/usage` sections (`credits`, `search`,
+     `documents`, `records`, `identity`, `inference`, `readAccess`, `tenants`) narrow to
+     that context alone — a root key or a cross-context credential still sees full-account
+     totals. Two exceptions: `reads.calls.used`/`reads.dataOut.bytes` read `0` for a
+     context-confined credential (metered per account, no per-context breakdown exists),
+     and `credits.limit` always reflects your whole plan.
+
+9. **Named platform capabilities (`granted_capabilities`):**
+   - A scope clause (in a role, an access profile, or an invitation) accepts
+     an optional `granted_capabilities` array alongside `allowed_actions` and
+     `data_scope`. A capability grants a bounded, cross-context effect the
+     `resource:ops` verb grammar cannot express on its own.
+   - Four names are recognized in this release. `member-lifecycle`: create and
+     remove identities in app contexts the credential can already reach.
+     `forensic-read`: read the access log across every context in the tenant
+     (adds to, does not replace, the `access-log:r` action). `context-directory-read`:
+     read the tenant's app-context directory (contexts, roles, access
+     profiles) and a principal's cross-context membership, across every
+     context. `delegate-mint`: mint a scoped key (`POST /v1/admin/keys/scoped`)
+     bound to a principal other than the caller.
+   - The list is closed and versioned with the API. An absent or empty array
+     grants nothing (silence, not a wildcard). An unrecognized name denies the
+     WHOLE clause, including its `allowed_actions`, rather than being dropped.
+     `"*"` in `allowed_actions` never confers a capability; name each one
+     explicitly.
 
 ## Trust, isolation & compliance
 

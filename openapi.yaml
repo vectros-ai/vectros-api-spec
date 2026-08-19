@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.39.0"
+  version: "0.40.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -204,8 +204,11 @@ paths:
         \ a scoped credential, `keys:c` alone is not sufficient: because the minted\
         \ key is durably bound to the profile you name, the profile's effective scopes\
         \ may not exceed your own, and you may only mint against a profile whose `identityOverrides`\
-        \ values your own identity holds. A root API key (`sk_`) is exempt from both\
-        \ bounds."
+        \ values your own identity holds. Minting a key bound to your OWN principal\
+        \ needs nothing further; minting one bound to a DIFFERENT principal additionally\
+        \ requires the `delegate-mint` capability (`granted_capabilities`) on your\
+        \ credential — without it the request is refused. A root API key (`sk_`) is\
+        \ exempt from all three bounds."
       operationId: createScopedKey
       requestBody:
         content:
@@ -233,12 +236,18 @@ paths:
             \ or your plan's active-key limit has been reached, or the referenced\
             \ profile names a `roleId` that no longer exists in its context."
         "403":
-          description: "Your token lacks the `keys:c` scope, or — when minting with\
+          description: "Your token lacks the `keys:c` scope; or — when minting with\
             \ a scoped credential — the referenced profile's effective scopes exceed\
-            \ your own, or it carries an identity value you do not hold yourself."
+            \ your own, or it carries an identity value you do not hold yourself;\
+            \ or you named a `userId` other than your own principal without holding\
+            \ the `delegate-mint` capability."
         "404":
-          description: "The referenced context, user, or access profile does not exist\
-            \ in your account."
+          description: "The context does not exist, or no access profile exists for\
+            \ the named user in the named context. This is a single, uniform response:\
+            \ a user id that does not exist anywhere in your account and a user id\
+            \ that exists but has no profile in this context return the identical\
+            \ message (naming the access profile) — match on that message, not on\
+            \ whether the user itself was found."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -359,10 +368,11 @@ paths:
       - name: resource
         in: query
         description: "Filter by resource type. One of `documents`, `records`, `search`,\
-          \ `schemas`, `folders`, `entities`, `namespaces`, `clients`, `orgs`, `users`,\
-          \ `usage`, `auth`, `models`, `ping`, `rag`, `chat`, `ask`, `erasure-requests`,\
-          \ or `export`. (`clients` and `orgs` match log rows written before the identity\
-          \ surfaces were folded into `entities`.)"
+          \ `schemas`, `folders`, `entities`, `namespaces`, `users`, `usage`, `auth`,\
+          \ `models`, `ping`, `issuers`, `rag`, `chat`, `ask`, `erasure-requests`,\
+          \ or `export`. `clients` and `orgs` are not accepted — `/v1/orgs` and `/v1/clients`\
+          \ were retired onto `/v1/entities/{namespace}` and no log row was ever written\
+          \ under those resource names."
         schema:
           type: string
         example: documents
@@ -472,10 +482,14 @@ paths:
         \ and `status` instead of returning it unchanged, set `?upsert=true` (this\
         \ also requires the `profiles:u` scope, and applies the same `identityOverrides`\
         \ bounds the update endpoint documents — a scoped credential may not repoint\
-        \ or clear an identity value it does not itself hold). You must provide exactly\
-        \ one of `scopes` (an inline list of scopes) or `roleId` (a reference to a\
-        \ role); supplying both, or neither, is rejected. `identityOverrides` is keyed\
-        \ by ownership namespace in `scope:<namespace>` form — `scope:org` and `scope:client`\
+        \ or clear an identity value it does not itself hold). The `principalId` must\
+        \ name a principal that already exists: a `usr_` principal must be a live\
+        \ user in your tenant, so create the user before granting it a profile. A\
+        \ `usr_` id that names no such user is rejected, and no profile is created.\
+        \ `key_` principals are not checked this way. You must provide exactly one\
+        \ of `scopes` (an inline list of scopes) or `roleId` (a reference to a role);\
+        \ supplying both, or neither, is rejected. `identityOverrides` is keyed by\
+        \ ownership namespace in `scope:<namespace>` form — `scope:org` and `scope:client`\
         \ for the reserved namespaces, or any namespace you have registered — and\
         \ may name at most two; any other key (including the account identifier or\
         \ `userId`) is rejected. If you use a scoped credential, the profile's effective\
@@ -519,9 +533,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/AccessProfileResponse"
         "400":
-          description: "Invalid principalId, or both/neither of scopes and roleId\
+          description: "Invalid principalId, or a `usr_` principalId that does not\
+            \ name a live user in this tenant, or both/neither of scopes and roleId\
             \ were provided, or `roleId` does not reference a role that exists in\
-            \ this context, or an identityOverrides key is not permitted."
+            \ this context, or an identityOverrides key is not permitted. If your\
+            \ credential holds `users:r` the message names the reason (no such user);\
+            \ otherwise the response is deliberately indistinguishable from a malformed\
+            \ principalId, so a credential that cannot list your users cannot use\
+            \ this endpoint to discover which user ids exist."
         "404":
           description: No app context exists with this contextId.
         "403":
@@ -1284,7 +1303,16 @@ paths:
         \ down by category (search, documents, and records) with per-category credit\
         \ estimates and a split between your live and test environments. Defaults\
         \ to the current month when `year` and `month` are omitted. Requires the `billing:r`\
-        \ scope on scoped tokens; API keys always have access."
+        \ scope on scoped tokens; API keys always have access. **A token confined\
+        \ to a single app context sees only that context's usage**: totals, the environment\
+        \ split, and the `contexts` breakdown narrow to it, and the environment your\
+        \ context is not bound to is omitted (`null`), not zeroed. Only a token with\
+        \ cross-context reach sees your full account-wide totals. Two exceptions to\
+        \ the narrowing, since they have no per-context breakdown to narrow to: `reads.calls.used`/`reads.dataOut.bytes`\
+        \ (metered per account, not per context) read as `0` for a confined token\
+        \ rather than a narrowed figure — the corresponding overage-credit charge\
+        \ fields narrow correctly; and `credits.limit` stays your whole plan's ceiling,\
+        \ so `credits.remaining` may overstate the account's true remaining room."
       operationId: getUsage
       parameters:
       - name: year
@@ -1304,8 +1332,12 @@ paths:
         example: 5
       - name: contextId
         in: query
-        description: "App context id. When supplied, the `contexts` breakdown is restricted\
-          \ to that single app context; your account-wide totals are unaffected."
+        description: "App context id. For a token with cross-context reach, this only\
+          \ restricts the `contexts` breakdown to that single app context — your account-wide\
+          \ totals are unaffected. For a token confined to one app context, your totals\
+          \ are *already* narrowed to it (see the operation description) regardless\
+          \ of this parameter; supplying it must name your own context or the request\
+          \ is refused."
         schema:
           type: string
         example: default
@@ -1320,7 +1352,9 @@ paths:
           description: The supplied `year` or `month` value is non-numeric or out
             of range.
         "403":
-          description: Your token lacks the `billing:r` scope.
+          description: "Your token lacks the `billing:r` scope, or (for a token confined\
+            \ to a single app context) the `contextId` you supplied names a different\
+            \ context than the one your token is bound to."
       security:
         - BearerAuth: []
   /v1/documents:
@@ -2066,6 +2100,17 @@ paths:
         schema:
           type: string
         example: team
+      - name: contextId
+        in: query
+        description: "Which app context to read from. **Required when the namespace\
+          \ is context-placed** and rejected otherwise: a tenant-placed namespace's\
+          \ entities are shared by every context, so there is nothing to name. A context-placed\
+          \ namespace's entities belong to exactly one context and are invisible from\
+          \ the others — the same `externalId` may name a different entity in each.\
+          \ A context-confined credential may only name its own context."
+        schema:
+          type: string
+        example: myapp
       - name: userId
         in: query
         description: Return only entities owned by this user (Vectros user ID).
@@ -2193,6 +2238,16 @@ paths:
         schema:
           type: boolean
           default: false
+      - name: contextId
+        in: query
+        description: "Which app context owns the new entity. **Required when the namespace\
+          \ is context-placed** and omitted otherwise: a tenant-placed namespace's\
+          \ entities are shared by every context, so supplying one is rejected. A\
+          \ context-confined credential may only name its own context. An entity's\
+          \ context is fixed at creation and cannot be changed afterwards."
+        schema:
+          type: string
+        example: myapp
       requestBody:
         content:
           application/json:
@@ -2256,6 +2311,17 @@ paths:
         schema:
           type: string
         example: team
+      - name: contextId
+        in: query
+        description: "Which app context to read from. **Required when the namespace\
+          \ is context-placed** and rejected otherwise: a tenant-placed namespace's\
+          \ entities are shared by every context, so there is nothing to name. A context-placed\
+          \ namespace's entities belong to exactly one context and are invisible from\
+          \ the others — the same `externalId` may name a different entity in each.\
+          \ A context-confined credential may only name its own context."
+        schema:
+          type: string
+        example: myapp
       - name: id
         in: path
         description: The Vectros-assigned ID (UUID) of the entity.
@@ -2291,6 +2357,17 @@ paths:
         schema:
           type: string
         example: team
+      - name: contextId
+        in: query
+        description: "Which app context to read from. **Required when the namespace\
+          \ is context-placed** and rejected otherwise: a tenant-placed namespace's\
+          \ entities are shared by every context, so there is nothing to name. A context-placed\
+          \ namespace's entities belong to exactly one context and are invisible from\
+          \ the others — the same `externalId` may name a different entity in each.\
+          \ A context-confined credential may only name its own context."
+        schema:
+          type: string
+        example: myapp
       - name: id
         in: path
         required: true
@@ -2343,6 +2420,17 @@ paths:
         schema:
           type: string
         example: team
+      - name: contextId
+        in: query
+        description: "Which app context to read from. **Required when the namespace\
+          \ is context-placed** and rejected otherwise: a tenant-placed namespace's\
+          \ entities are shared by every context, so there is nothing to name. A context-placed\
+          \ namespace's entities belong to exactly one context and are invisible from\
+          \ the others — the same `externalId` may name a different entity in each.\
+          \ A context-confined credential may only name its own context."
+        schema:
+          type: string
+        example: myapp
       - name: id
         in: path
         required: true
@@ -2391,6 +2479,17 @@ paths:
         schema:
           type: string
         example: team
+      - name: contextId
+        in: query
+        description: "Which app context to read from. **Required when the namespace\
+          \ is context-placed** and rejected otherwise: a tenant-placed namespace's\
+          \ entities are shared by every context, so there is nothing to name. A context-placed\
+          \ namespace's entities belong to exactly one context and are invisible from\
+          \ the others — the same `externalId` may name a different entity in each.\
+          \ A context-confined credential may only name its own context."
+        schema:
+          type: string
+        example: myapp
       requestBody:
         content:
           application/json:
@@ -2442,6 +2541,17 @@ paths:
         schema:
           type: string
         example: team
+      - name: contextId
+        in: query
+        description: "Which app context to read from. **Required when the namespace\
+          \ is context-placed** and rejected otherwise: a tenant-placed namespace's\
+          \ entities are shared by every context, so there is nothing to name. A context-placed\
+          \ namespace's entities belong to exactly one context and are invisible from\
+          \ the others — the same `externalId` may name a different entity in each.\
+          \ A context-confined credential may only name its own context."
+        schema:
+          type: string
+        example: myapp
       - name: id
         in: path
         description: The Vectros-assigned ID (UUID) of the entity.
@@ -3015,8 +3125,11 @@ paths:
       tags:
       - Auth
       summary: Get a registered issuer
-      description: Retrieves a single registered issuer by issuerId. Requires a root
-        API key or the bootstrap's provisioning capability.
+      description: "Retrieves a single registered issuer by issuerId. Requires a root\
+        \ API key or the bootstrap's provisioning capability. A credential confined\
+        \ to one app context sees only an issuer registered in that context; naming\
+        \ one registered in another context returns 404, identically to a nonexistent\
+        \ issuerId. A root API key sees every context."
       operationId: getIssuer
       parameters:
       - name: issuerId
@@ -3044,15 +3157,16 @@ paths:
       - Auth
       summary: Delete a registered issuer
       description: "Deregisters a trusted third-party IdP issuer. Requires a root\
-        \ API key or the bootstrap's provisioning capability. Unconditional — unlike\
-        \ some other registry deletes on this API, this does not check for or block\
-        \ on any downstream reference. Any user account already created via this issuer\
-        \ (by a prior self-signup or accepted invite) is NOT deleted or modified,\
-        \ but that user can no longer obtain a NEW token this way once you deregister\
-        \ the issuer — every `POST /v1/auth/token/exchange` call against it will 404,\
-        \ with no distinction between an unknown issuer and one you just deregistered.\
-        \ Register a replacement issuer, or restore this one, before your users' current\
-        \ tokens expire if you want their access to continue uninterrupted."
+        \ API key or the bootstrap's provisioning capability. A credential confined\
+        \ to one app context may only deregister an issuer registered in that context;\
+        \ naming one registered in another context returns 404, identically to a nonexistent\
+        \ issuerId. A root API key may deregister any issuer. Refused if any user\
+        \ account was ever created or matched via this issuer (by a prior self-signup\
+        \ or accepted invite, through `POST /v1/auth/token/exchange`) — that access\
+        \ cannot be silently orphaned. Deactivate the affected users first if you\
+        \ intend to cut off their access, or register a replacement issuer before\
+        \ removing this one. An issuer that has never been used for an exchange (no\
+        \ bound users yet) can always be deregistered."
       operationId: deleteIssuer
       parameters:
       - name: issuerId
@@ -3069,6 +3183,10 @@ paths:
           description: Root API key or provisioning capability required.
         "404":
           description: No issuer with this issuerId is registered in your tenant.
+        "409":
+          description: "At least one user was created or matched via this issuer —\
+            \ deregistering it is refused. Deactivate affected users first, or register\
+            \ a replacement issuer."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -3093,8 +3211,9 @@ paths:
       - Auth
       summary: List registered issuers
       description: "Returns the issuers registered in your tenant. Requires a root\
-        \ API key or the bootstrap's provisioning capability. Returns a `{data, nextCursor}`\
-        \ envelope."
+        \ API key or the bootstrap's provisioning capability. A credential confined\
+        \ to one app context sees only the issuers registered in that context; a root\
+        \ API key sees every context. Returns a `{data, nextCursor}` envelope."
       operationId: listIssuers
       parameters:
       - name: startFrom
@@ -3129,9 +3248,17 @@ paths:
       description: "Registers a trusted third-party IdP issuer that BYO-IdP token\
         \ exchange (`POST /v1/auth/token/exchange`) may accept a `subject_token` from.\
         \ Requires a root API key or the CLI bootstrap's provisioning capability —\
-        \ never an ordinary partner-grantable scope. Idempotent by `issuerId` within\
+        \ never an ordinary partner-grantable scope. A credential authorized only\
+        \ via the provisioning capability may register only against the app context\
+        \ it is bound to; naming a different one returns 403. A root API key is unaffected\
+        \ and may register against any of its contexts. Idempotent by `issuerId` within\
         \ your tenant; the `(issuer, audience)` pair must not already be registered\
-        \ by a different issuerId/tenant."
+        \ by a different issuerId/tenant. If `issuerId` collides with a registration\
+        \ owned by a different app context than the one you're confined to, the request\
+        \ fails with 400 rather than returning that context's configuration. An app\
+        \ context may have at most one active issuer — deregister the existing one\
+        \ first if you need to replace it. One issuer MAY serve several contexts today,\
+        \ each via its own registration row with a distinct `audience`."
       operationId: registerIssuer
       requestBody:
         content:
@@ -3147,17 +3274,22 @@ paths:
               schema:
                 $ref: "#/components/schemas/IssuerResponse"
         "200":
-          description: An issuer with this issuerId already exists in your tenant;
-            the existing registration is returned unchanged.
+          description: An issuer with this issuerId already exists in your tenant
+            and belongs to your own app context; the existing registration is returned
+            unchanged.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/IssuerResponse"
         "400":
           description: "Malformed request, invalid issuerId/contextId format, unknown\
-            \ contextId, or the (issuer, audience) pair is already registered."
+            \ contextId, the (issuer, audience) pair is already registered, the named\
+            \ contextId already has a different active issuer, or issuerId collides\
+            \ with a registration owned by a different app context you do not administer."
         "403":
-          description: Root API key or provisioning capability required.
+          description: "Root API key or provisioning capability required, or the provisioning\
+            \ capability you hold is bound to a different app context than the one\
+            \ you named."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -3203,8 +3335,7 @@ paths:
       tags:
       - Identity
       summary: Get a scope namespace
-      description: Retrieves a single scope-namespace registration by name. The reserved
-        built-ins `org` and `client` are always resolvable.
+      description: Retrieves a single scope-namespace registration by name.
       operationId: getNamespace
       parameters:
       - name: namespace
@@ -3214,6 +3345,13 @@ paths:
         schema:
           type: string
         example: team
+      - name: contextId
+        in: query
+        description: "An app context to resolve this namespace for — its own registration\
+          \ if it has one, else the tenant-wide one. Omit for the tenant-wide registration\
+          \ only."
+        schema:
+          type: string
       responses:
         "200":
           description: The requested namespace.
@@ -3230,9 +3368,10 @@ paths:
       - Identity
       summary: Update a scope namespace
       description: "Updates the mutable fields (`entityBacked`, `defaultSchemaId`,\
-        \ `specificityRank`) of a registered namespace. The namespace name itself\
-        \ is immutable. Requires a root API key. The reserved built-ins cannot be\
-        \ updated."
+        \ `specificityRank`) of a registered namespace. The namespace name and its\
+        \ `contextId` (which row is selected) are both immutable. Requires a root\
+        \ API key. `org` and `client` are updatable like any other namespace — there\
+        \ is no reserved-built-in exception."
       operationId: updateNamespace
       parameters:
       - name: namespace
@@ -3242,6 +3381,12 @@ paths:
         schema:
           type: string
         example: team
+      - name: contextId
+        in: query
+        description: The app context that owns this registration. Omit for the tenant-wide
+          registration.
+        schema:
+          type: string
       requestBody:
         content:
           application/json:
@@ -3256,8 +3401,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/NamespaceResponse"
         "403":
-          description: "A root API key is required, or the namespace is a reserved\
-            \ built-in."
+          description: A root API key is required.
         "404":
           description: No namespace with this name is registered in your account.
         "429":
@@ -3282,9 +3426,10 @@ paths:
       - Identity
       summary: Delete a scope namespace
       description: Deletes a registered scope namespace. Requires a root API key.
-        The reserved built-ins cannot be deleted. A namespace that still has entities
-        cannot be deleted (409) — delete its entities first; this keeps them reachable
-        by the account-teardown and erasure sweeps.
+        `org` and `client` are deletable like any other namespace — there is no reserved-built-in
+        exception. A namespace that still has entities cannot be deleted (409) — delete
+        its entities first; this keeps them reachable by the account-teardown and
+        erasure sweeps.
       operationId: deleteNamespace
       parameters:
       - name: namespace
@@ -3294,12 +3439,17 @@ paths:
         schema:
           type: string
         example: team
+      - name: contextId
+        in: query
+        description: The app context that owns this registration. Omit for the tenant-wide
+          registration.
+        schema:
+          type: string
       responses:
         "204":
           description: The namespace registration was deleted.
         "403":
-          description: "A root API key is required, or the namespace is a reserved\
-            \ built-in."
+          description: A root API key is required.
         "404":
           description: No namespace with this name is registered in your account.
         "429":
@@ -3325,9 +3475,8 @@ paths:
       tags:
       - Identity
       summary: List scope namespaces
-      description: "Returns the scope namespaces registered in your account, with\
-        \ the reserved built-ins `org` and `client` listed first. Returns a `{data,\
-        \ nextCursor}` envelope."
+      description: "Returns the scope namespaces registered in your account. Returns\
+        \ a `{data, nextCursor}` envelope."
       operationId: listNamespaces
       parameters:
       - name: startFrom
@@ -3344,6 +3493,13 @@ paths:
           type: integer
           format: int64
           default: 20
+      - name: contextId
+        in: query
+        description: List one app context's OWN registrations instead of the tenant-wide
+          ones. Omit for the tenant-wide registrations only — a context's own registrations
+          are never mixed into the unfiltered listing.
+        schema:
+          type: string
       responses:
         "200":
           description: "A page of namespaces as a `{data, nextCursor}` envelope."
@@ -3360,9 +3516,17 @@ paths:
       description: "Registers a new scope namespace and declares whether its values\
         \ resolve to identity entities (`entityBacked`). Also requires `specificityRank`,\
         \ an explicit, account-unique position in the specificity order used to break\
-        \ recordType schema-resolution ties. Requires a root API key. The reserved\
-        \ names `org` and `client` are built in and cannot be registered."
+        \ recordType schema-resolution ties. Requires a root API key or the CLI bootstrap's\
+        \ provisioning capability — never an ordinary partner-grantable scope. `org`\
+        \ and `client` are reserved names, registered the same way as any other namespace."
       operationId: registerNamespace
+      parameters:
+      - name: contextId
+        in: query
+        description: The app context to own this registration. Omit for a TENANT-WIDE
+          registration visible to every context.
+        schema:
+          type: string
       requestBody:
         content:
           application/json:
@@ -3380,7 +3544,8 @@ paths:
           description: "The namespace name is invalid, reserved, or already registered,\
             \ or `specificityRank` is missing, out of range, or already taken."
         "403":
-          description: A root API key is required to register a namespace.
+          description: A root API key or the CLI bootstrap's provisioning capability
+            is required to register a namespace.
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -3425,11 +3590,15 @@ paths:
     get:
       tags:
       - Auth
-      summary: List all access profiles for a principal across every context
-      description: "Returns the access profiles for the given principal across all\
-        \ of your contexts. Use this to answer questions like \"which apps does this\
-        \ user have access to?\" — for example, to build a member-access summary.\
-        \ Results are confined to your account. Requires the `profiles:r` scope."
+      summary: List a principal's access profiles
+      description: "Returns the access profiles for the given principal. Looking up\
+        \ your OWN principal — or holding the `context-directory-read` capability\
+        \ — returns the profiles across ALL of your contexts, letting you answer questions\
+        \ like \"which apps does this user have access to?\". A context-bound credential\
+        \ looking up a DIFFERENT principal instead sees only that principal's profile\
+        \ in your credential's own context (at most one result), never across contexts\
+        \ it has no authority over. Results are always confined to your account. Requires\
+        \ the `profiles:r` scope."
       operationId: listProfilesForPrincipal
       parameters:
       - name: principalId
@@ -3459,7 +3628,9 @@ paths:
         example: 20
       responses:
         "200":
-          description: A page of the principal's access profiles across your contexts.
+          description: "A page of the principal's access profiles — across every context\
+            \ you administer for a self-lookup or a `context-directory-read` holder;\
+            \ at most one result, scoped to your own context, otherwise."
           content:
             application/json:
               schema:
@@ -4354,10 +4525,14 @@ paths:
       description: "Returns a paginated list of the record schemas defined in your\
         \ account. Filter by `userId` or `scope` to scope to an owner, by `surface`\
         \ to list the types bindable to one surface, or by `recordType` to resolve\
-        \ the single schema for a type directly. Filtering by an identity surface\
-        \ (`user` or `entity`) lists your account-wide identity schemas regardless\
-        \ of the calling context; filtering by record or document lists within the\
-        \ calling context. Requires the `schemas:r` scope."
+        \ the single schema for a type directly. Filtering by `surface=user` lists\
+        \ your account-wide identity schemas regardless of the calling context (a\
+        \ `user`-surfaced schema always has one tenant-wide home). Filtering by `surface=entity`\
+        \ reads your own app context's entity schemas AND the tenant-wide home together,\
+        \ newest first, through a single cursor — an entity schema may live in either\
+        \ home depending on where its namespace is placed (see `POST /v1/namespaces`).\
+        \ Filtering by `record` or `document` lists within the calling context only.\
+        \ Requires the `schemas:r` scope."
       operationId: listSchemas
       parameters:
       - name: userId
@@ -4372,9 +4547,9 @@ paths:
         in: query
         description: "Filter to schemas carrying this scope value, as a single `namespace:value`\
           \ entry — for example `org:6ba7b810-9dad-11d1-80b4-00c04fd430c8` or `group:eng-team`.\
-          \ `org` and `client` are built-in namespaces; others are custom scopes you\
-          \ define. Resolve a namespace's UUID from your own identifier with `GET\
-          \ /v1/entities/{namespace}?externalId=`."
+          \ `org` and `client` are reserved namespace names; others are namespaces\
+          \ you registered yourself. Resolve a namespace's UUID from your own identifier\
+          \ with `GET /v1/entities/{namespace}?externalId=`."
         schema:
           type: string
         example: org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
@@ -4384,10 +4559,15 @@ paths:
           \ `user`, or `entity` — identity entities in any namespace (`org`, `client`,\
           \ or one you registered) bind under the single `entity` surface. Returns\
           \ only schemas whose allowed surfaces include the given one — useful for\
-          \ listing, say, document types separately from record types. The identity\
-          \ surfaces (`user`, `entity`) are account-wide: filtering by one lists your\
-          \ account's identity schemas regardless of the calling context, whereas\
-          \ `record` and `document` list within the calling context."
+          \ listing, say, document types separately from record types. `user` is fully\
+          \ account-wide: filtering by it lists your account's identity schemas regardless\
+          \ of the calling context, since a `user`-surfaced schema always has one\
+          \ tenant-wide home. `entity` is NOT account-wide in the same sense: an entity\
+          \ schema is homed in whichever app context its namespace is placed in (or\
+          \ the tenant-wide home for a tenant-placed namespace), so filtering by `entity`\
+          \ reads your own context's entity schemas together with the tenant-wide\
+          \ ones — a different caller context can see a different result. `record`\
+          \ and `document` list within the calling context only."
         schema:
           type: string
         example: document
@@ -4397,13 +4577,14 @@ paths:
           \ handle for a schema, and the direct alternative to remembering its opaque\
           \ id. Returns a one-element page, or an empty page if no such schema exists.\
           \ Resolved in the calling context for record and document types; combine\
-          \ with `surface=user` or `surface=entity` to resolve an account-wide identity\
-          \ schema. A type name may have several schemas in one context — a shared\
-          \ base, plus per-owner variants declared via `basedOn` — and resolution\
-          \ shadows by ownership: your own `userId`- or `scope`-owned variant wins\
-          \ if you have one, otherwise the shared base. For a scoped credential the\
-          \ owner is always your own token identity; `userId`/`scope` here only apply\
-          \ as an explicit owner selector for a root API key (a scoped credential's\
+          \ with `surface=user` to resolve an account-wide identity schema, or `surface=entity`\
+          \ to resolve one from your own context plus the tenant-wide home (see the\
+          \ `surface` parameter). A type name may have several schemas in one context\
+          \ — a shared base, plus per-owner variants declared via `basedOn` — and\
+          \ resolution shadows by ownership: your own `userId`- or `scope`-owned variant\
+          \ wins if you have one, otherwise the shared base. For a scoped credential\
+          \ the owner is always your own token identity; `userId`/`scope` here only\
+          \ apply as an explicit owner selector for a root API key (a scoped credential's\
           \ own identity always governs resolution, and a `scope` filter still narrows\
           \ the result afterward regardless of credential type)."
         schema:
@@ -4532,7 +4713,8 @@ paths:
         "403":
           description: "Your API key or token lacks the `schemas:c` scope required\
             \ to create a schema (or, with `?upsert=true`, the `schemas:u` scope required\
-            \ to reconcile it)."
+            \ to reconcile it); or `allowedSurfaces` includes `user` and you used\
+            \ a scoped credential — user-surfaced schemas require a root API key."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -4614,9 +4796,11 @@ paths:
             \ no single clause of it both authorizes this update and covers the resulting\
             \ ownership."
         "403":
-          description: The request tries to reassign the row's owning `userId`. The
-            principal is attributed by the server from your credential and cannot
-            be changed by an update.
+          description: "The request tries to reassign the row's owning `userId`. The\
+            \ principal is attributed by the server from your credential and cannot\
+            \ be changed by an update. Or: the schema's `allowedSurfaces` includes\
+            \ `user` (either before or after the update) and you used a scoped credential\
+            \ — user-surfaced schemas require a root API key."
         "404":
           description: No schema with this id exists in your account.
         "429":
@@ -4658,6 +4842,9 @@ paths:
       responses:
         "204":
           description: The schema was deleted.
+        "403":
+          description: The schema's `allowedSurfaces` includes `user` and you used
+            a scoped credential — user-surfaced schemas require a root API key.
         "404":
           description: No schema with this id exists in your account.
         "409":
@@ -4811,6 +4998,9 @@ paths:
             \ or identity-entity ID that does not exist in your account."
         "403":
           description: Only a root API key can mint scoped tokens.
+        "404":
+          description: The `contextId` you supplied does not name an existing app
+            context in your account.
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -4838,7 +5028,9 @@ paths:
         \ to look up a single user by your own identifier. To filter on schema-declared\
         \ lookup fields, supply `type` and `field` together with one lookup mode:\
         \ `value` (exact match), `from`+`to` (range), or `prefix`. Requires the `users:r`\
-        \ scope."
+        \ scope. A context-confined credential only sees users who hold an access\
+        \ profile in the credential's own app context — others are silently absent\
+        \ from the page, not an error."
       operationId: listUsers
       parameters:
       - name: externalId
@@ -5041,7 +5233,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/UserResponse"
         "404":
-          description: No user with the given ID exists in your account.
+          description: No user with the given ID exists in your account. A context-confined
+            credential also sees this when the user exists but holds no access profile
+            in the credential's own app context — indistinguishable from not existing.
       security:
         - BearerAuth: []
     put:
@@ -5081,7 +5275,9 @@ paths:
           description: "Validation error: an immutable field was changed, or `email`\
             \ was changed while an invitation to that user is still outstanding."
         "404":
-          description: No user with the given ID exists in your account.
+          description: No user with the given ID exists in your account. A context-confined
+            credential also sees this when the user exists but holds no access profile
+            in the credential's own app context — indistinguishable from not existing.
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5105,7 +5301,12 @@ paths:
       summary: Delete a user
       description: "Permanently deletes a user identity. This cannot be undone. If\
         \ the user is a pending invitation, the associated access profile created\
-        \ for that invitation is also removed. Requires the `users:d` scope."
+        \ for that invitation is also removed. Requires the `users:d` scope. Deleting\
+        \ your account's last OWNER is refused (409) — an account must always retain\
+        \ at least one owner. Called by a context-confined credential, deletion is\
+        \ also refused (409) when the user holds access in an app context other than\
+        \ the caller's own — remove the user from the caller's own context first,\
+        \ or use a credential with cross-context reach."
       operationId: deleteUser
       parameters:
       - name: id
@@ -5119,7 +5320,14 @@ paths:
         "204":
           description: The user was deleted. No content is returned.
         "404":
-          description: No user with the given ID exists in your account.
+          description: No user with the given ID exists in your account. A context-confined
+            credential also sees this when the user exists but holds no access profile
+            in the credential's own app context — indistinguishable from not existing.
+        "409":
+          description: "Either: this is your account's last OWNER (an account must\
+            \ always retain at least one owner; contact support if you need to change\
+            \ who holds it), or the calling credential is context-confined and the\
+            \ user holds access in an app context other than its own."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5150,7 +5358,9 @@ paths:
         \ and never appears in the URL, request logs, or proxies. The query semantics\
         \ are identical to the GET /v1/users lookup, which rejects sensitive-field\
         \ values and directs you here. Returns a page in the `{data, nextCursor}`\
-        \ envelope. Requires the `users:r` scope."
+        \ envelope. Requires the `users:r` scope. A context-confined credential only\
+        \ sees users who hold an access profile in the credential's own app context\
+        \ — others are silently absent from the page, not an error."
       operationId: lookupUsers
       requestBody:
         content:
@@ -5323,9 +5533,14 @@ paths:
             \ context already has it; an outstanding invitation already exists and\
             \ your token lacks the `users:r` and `users:u` scopes needed to resend\
             \ it; or it is already associated with an identity elsewhere in your account.\
-            \ The first two cases are deliberately indistinguishable. Only the last\
-            \ returns a structured body with the `email_already_associated` error\
-            \ code."
+            \ These cases are deliberately indistinguishable to a scoped credential\
+            \ — all three return the same response — so the error cannot be used to\
+            \ work out WHICH of them applies, i.e. where in your account the address\
+            \ is already in use. Note this hides which, not whether: a 409 still tells\
+            \ you the address is unavailable somewhere in your account, which is inherent\
+            \ to an idempotent invite. A root API key receives a structured body with\
+            \ the `email_already_associated` error code for the third case, since\
+            \ it can already enumerate its own users directly."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5414,9 +5629,13 @@ paths:
         \ and bound to the policy's configured role). If `invite_token` is present\
         \ at all, it is the ONLY path tried — a failed invite never falls through\
         \ to self-signup. Neither field is required for a subject with an existing\
-        \ identity. Uses the OAuth-standard error envelope (`{\"error\":..., \"error_description\"\
-        :...}`, RFC 6749 §5.2), NOT this API's usual `{\"message\":...}` shape — its\
-        \ client is generic OAuth tooling, not the Vectros SDK."
+        \ identity. If your issuer is registered against more than one app context\
+        \ (each via its own audience), `context_id` selects which one to target; omit\
+        \ it when your token's `aud` claim matches only one registered context — the\
+        \ common case, unaffected by this field. Uses the OAuth-standard error envelope\
+        \ (`{\"error\":..., \"error_description\":...}`, RFC 6749 §5.2), NOT this\
+        \ API's usual `{\"message\":...}` shape — its client is generic OAuth tooling,\
+        \ not the Vectros SDK."
       operationId: exchangeToken
       requestBody:
         content:
@@ -5928,10 +6147,12 @@ components:
           example: myapp
         userId:
           type: string
-          description: The user the key binds to. May be a `HUMAN` or a `SERVICE`
-            user (a service user is the typical agent or bot case). An access profile
-            must already exist for this context and user — the key references that
-            profile; it does not create one.
+          description: "The user the key binds to. May be a `HUMAN` or a `SERVICE`\
+            \ user (a service user is the typical agent or bot case). An access profile\
+            \ must already exist for this context and user — the key references that\
+            \ profile; it does not create one. Naming your own principal needs nothing\
+            \ further; naming any OTHER principal additionally requires the `delegate-mint`\
+            \ capability on your credential, or a root API key."
           example: alice-001
         label:
           type: string
@@ -6076,6 +6297,15 @@ components:
             \ here by design."
           nullable: true
           example: RATE_LIMITED
+        delegationChain:
+          type: string
+          description: "A JSON-encoded record of who delegated the credential that\
+            \ made this call, present only when the request was made under a key minted\
+            \ via the `delegate-mint` capability (see `POST /v1/admin/keys/scoped`).\
+            \ Null for the overwhelming majority of calls, which carry no delegation."
+          nullable: true
+          example: "[{\"kind\":\"key\",\"sub\":\"usr_alice\",\"handle\":\"key_delegator\"\
+            }]"
       description: A single API call as recorded after the request completed.
     AccessProfileResponse:
       type: object
@@ -6162,9 +6392,16 @@ components:
             \ resource:ops form. A ':qualifier' segment is honored only where it actually\
             \ narrows the grant — 'records'/'entities' correlate it for every op;\
             \ 'documents'/'users' correlate it ONLY for the 's' op (e.g. 'documents:s:invoice'\
-            \ restricts sensitive-field reveal to that type; a qualifier on 'documents:r'\
-            \ or any other resource/op combination is rejected rather than silently\
-            \ ignored)."
+            \ restricts sensitive-field reveal to that type); 'profiles' correlates\
+            \ it ONLY for c/u/d (create/update/delete), confining WHICH principal\
+            \ the grant may act on — a literal 'usr_<id>' principal, or the bare 'self'\
+            \ sentinel, which matches only when the target principal is your own bound\
+            \ identity (a bare, unqualified 'profiles:cru' stays broad and unaffected).\
+            \ A qualifier on any other resource/op combination — e.g. 'documents:r:invoice'\
+            \ or 'profiles:r:self' — is rejected at authoring time rather than silently\
+            \ ignored. \n\nOne cross-field caveat: if this clause also carries a 'granted_capabilities'\
+            \ entry that this release does not recognize, the WHOLE clause is denied\
+            \ and none of these verbs apply. See that field."
           example:
           - records:cru
           - search:r
@@ -6184,8 +6421,16 @@ components:
               \ where it actually narrows the grant — 'records'/'entities' correlate\
               \ it for every op; 'documents'/'users' correlate it ONLY for the 's'\
               \ op (e.g. 'documents:s:invoice' restricts sensitive-field reveal to\
-              \ that type; a qualifier on 'documents:r' or any other resource/op combination\
-              \ is rejected rather than silently ignored)."
+              \ that type); 'profiles' correlates it ONLY for c/u/d (create/update/delete),\
+              \ confining WHICH principal the grant may act on — a literal 'usr_<id>'\
+              \ principal, or the bare 'self' sentinel, which matches only when the\
+              \ target principal is your own bound identity (a bare, unqualified 'profiles:cru'\
+              \ stays broad and unaffected). A qualifier on any other resource/op\
+              \ combination — e.g. 'documents:r:invoice' or 'profiles:r:self' — is\
+              \ rejected at authoring time rather than silently ignored. \n\nOne cross-field\
+              \ caveat: if this clause also carries a 'granted_capabilities' entry\
+              \ that this release does not recognize, the WHOLE clause is denied and\
+              \ none of these verbs apply. See that field."
             example: "[\"records:cru\",\"search:r\"]"
         data_scope:
           type: object
@@ -6204,13 +6449,21 @@ components:
               \ '${{ self.userId }}' / '${{ self.scope.<namespace> }}' — the credential's\
               \ own value, resolved per request; '${{ under.self.userId }}' / '${{\
               \ under.self.scope.<namespace> }}' — values whose immediate parent is\
-              \ the credential's own (one level, not a full ancestor walk). Any other\
-              \ '${{ ... }}' spelling is rejected. \n\nReads and writes differ where\
-              \ a dimension is OMITTED: reading is not narrowed by a dimension the\
-              \ clause says nothing about, but writing a value into that dimension\
-              \ is not authorized by silence — a clause must name a dimension (or\
-              \ '*') to place data there. An empty object therefore reads tenant-wide\
-              \ and authorizes no placement."
+              \ the credential's own (one level, not a full ancestor walk); '${{ member.scope.<namespace>\
+              \ }}' / '${{ member.scope.<namespace>:<level> }}' — every value of that\
+              \ namespace the credential's principal is a MEMBER of, per the namespace's\
+              \ own membership declaration (see 'POST /v1/namespaces'), optionally\
+              \ narrowed to one membership level. This opts in explicitly — a namespace\
+              \ that declares no membership backing grants nothing to either form\
+              \ — and resolves once per request, so a revoked membership takes effect\
+              \ on your very next request rather than waiting out the token's lifetime.\
+              \ Naming a level the namespace has not declared is rejected at authoring\
+              \ time. Any other '${{ ... }}' spelling is rejected. \n\nReads and writes\
+              \ differ where a dimension is OMITTED: reading is not narrowed by a\
+              \ dimension the clause says nothing about, but writing a value into\
+              \ that dimension is not authorized by silence — a clause must name a\
+              \ dimension (or '*') to place data there. An empty object therefore\
+              \ reads tenant-wide and authorizes no placement."
             example:
               scope:org:
               - org_engineering
@@ -6227,15 +6480,158 @@ components:
             \ self.scope.<namespace> }}' — the credential's own value, resolved per\
             \ request; '${{ under.self.userId }}' / '${{ under.self.scope.<namespace>\
             \ }}' — values whose immediate parent is the credential's own (one level,\
-            \ not a full ancestor walk). Any other '${{ ... }}' spelling is rejected.\
-            \ \n\nReads and writes differ where a dimension is OMITTED: reading is\
-            \ not narrowed by a dimension the clause says nothing about, but writing\
-            \ a value into that dimension is not authorized by silence — a clause\
-            \ must name a dimension (or '*') to place data there. An empty object\
-            \ therefore reads tenant-wide and authorizes no placement."
+            \ not a full ancestor walk); '${{ member.scope.<namespace> }}' / '${{\
+            \ member.scope.<namespace>:<level> }}' — every value of that namespace\
+            \ the credential's principal is a MEMBER of, per the namespace's own membership\
+            \ declaration (see 'POST /v1/namespaces'), optionally narrowed to one\
+            \ membership level. This opts in explicitly — a namespace that declares\
+            \ no membership backing grants nothing to either form — and resolves once\
+            \ per request, so a revoked membership takes effect on your very next\
+            \ request rather than waiting out the token's lifetime. Naming a level\
+            \ the namespace has not declared is rejected at authoring time. Any other\
+            \ '${{ ... }}' spelling is rejected. \n\nReads and writes differ where\
+            \ a dimension is OMITTED: reading is not narrowed by a dimension the clause\
+            \ says nothing about, but writing a value into that dimension is not authorized\
+            \ by silence — a clause must name a dimension (or '*') to place data there.\
+            \ An empty object therefore reads tenant-wide and authorizes no placement."
           example:
             scope:org:
             - org_engineering
+        granted_capabilities:
+          type: array
+          description: "Named platform capabilities this clause grants — bounded effects\
+            \ that reach across a partition boundary, which allowed_actions cannot\
+            \ express. \n\nFour names are accepted in this release. \n\n'member-lifecycle'\
+            \ — create and remove identities in your tenant. Adding someone who already\
+            \ has an identity here resolves them by email or externalId as part of\
+            \ that operation; it does not let the credential look an identity up on\
+            \ its own. Grant it deliberately: its reach is any app context the credential\
+            \ can already administer, which is an ordinary grant where contexts separate\
+            \ your APPS — but not where you have modelled your own customers as separate\
+            \ app contexts. \n\n'forensic-read' — read the access log across every\
+            \ context in your tenant, by the credential that performed each read ('what\
+            \ did key K read'). It confers nothing on its own: the endpoint still\
+            \ requires the 'access-log:r' action, and this capability only lifts the\
+            \ app-context confinement on the by-credential query — so the effective\
+            \ grant is 'access-log:r' PLUS this name. It is tenant-wide by design\
+            \ and is not narrowed by the credential's own app context, so grant it\
+            \ only to an audit or support role. It is refused when a self-signup policy\
+            \ creates a profile, so no NEW self-signup can be created against a role\
+            \ that holds it; note that this is checked at that moment rather than\
+            \ continuously, so adding it to a role your users can already sign up\
+            \ to grants it to those existing members at their next token. \n\n'context-directory-read'\
+            \ — read your tenant's app-context DIRECTORY (which app contexts exist,\
+            \ their roles and access profiles, and which contexts a given principal\
+            \ is in) across every context, not just the credential's own. It confers\
+            \ no data-plane reach — records, documents, folders, schemas and entities\
+            \ are outside it entirely — and no write. Its effect: GET /v1/principals/{id}/profiles\
+            \ for a principal OTHER than the credential's own returns that principal's\
+            \ access profile in the credential's own app context only, unless the\
+            \ credential holds this capability, in which case it returns the profile\
+            \ across every context you administer (the same answer a lookup of the\
+            \ credential's OWN principal always gets). Grant it only to an admin or\
+            \ support role, for the same reason as 'forensic-read': it is tenant-wide\
+            \ by design and not narrowed by the credential's own app context. It is\
+            \ refused when a self-signup policy creates a profile, so no NEW self-signup\
+            \ can be created against a role that holds it; that check runs at that\
+            \ moment rather than continuously, so adding it to a role your users can\
+            \ already sign up to grants it to those existing members at their next\
+            \ token. \n\n'delegate-mint' — mint a scoped API key (ssk_*) bound to\
+            \ a DIFFERENT principal than your own, when creating one via POST /v1/admin/keys/scoped.\
+            \ Without it, that endpoint only lets a scoped credential mint a key bound\
+            \ to itself; a root key is unaffected. The target must already be a member\
+            \ of your own app context, and the minted key's effective scope can never\
+            \ exceed your own — this capability lifts only the WHO bound, not the\
+            \ WHAT one. Grant it to an operator or automation role that provisions\
+            \ credentials on other members' behalf; it is tenant-wide by design (the\
+            \ credential it lets you mint IS someone else, wherever that identity\
+            \ is later used). It is refused when a self-signup policy creates a profile,\
+            \ so no NEW self-signup can be created against a role that holds it; that\
+            \ check runs at that moment rather than continuously, so adding it to\
+            \ a role your users can already sign up to grants it to those existing\
+            \ members at their next token. \n\nThe list is CLOSED and versioned with\
+            \ the API: a later release may accept further names, and a name this release\
+            \ does not accept is rejected when you author the clause. Three rules,\
+            \ all fail-closed: an ABSENT or empty list grants NO capability (absence\
+            \ is silence, not a wildcard); an UNRECOGNIZED name denies this whole\
+            \ clause rather than being ignored, so a typo fails loudly at the first\
+            \ request instead of silently downgrading the grant; and a '*' in allowed_actions\
+            \ confers ZERO capabilities — '*' is not a wildcard here and is rejected\
+            \ as a name. Each capability's reach is fixed by its own definition, stated\
+            \ above; the clause carries NAMES ONLY. Where a capability acts on individual\
+            \ records this clause's data_scope narrows it too, but the name in this\
+            \ release is not per-record — 'member-lifecycle' is bounded by the app\
+            \ contexts the credential can reach, so data_scope does not narrow it."
+          example:
+          - member-lifecycle
+          items:
+            type: string
+            description: "Named platform capabilities this clause grants — bounded\
+              \ effects that reach across a partition boundary, which allowed_actions\
+              \ cannot express. \n\nFour names are accepted in this release. \n\n\
+              'member-lifecycle' — create and remove identities in your tenant. Adding\
+              \ someone who already has an identity here resolves them by email or\
+              \ externalId as part of that operation; it does not let the credential\
+              \ look an identity up on its own. Grant it deliberately: its reach is\
+              \ any app context the credential can already administer, which is an\
+              \ ordinary grant where contexts separate your APPS — but not where you\
+              \ have modelled your own customers as separate app contexts. \n\n'forensic-read'\
+              \ — read the access log across every context in your tenant, by the\
+              \ credential that performed each read ('what did key K read'). It confers\
+              \ nothing on its own: the endpoint still requires the 'access-log:r'\
+              \ action, and this capability only lifts the app-context confinement\
+              \ on the by-credential query — so the effective grant is 'access-log:r'\
+              \ PLUS this name. It is tenant-wide by design and is not narrowed by\
+              \ the credential's own app context, so grant it only to an audit or\
+              \ support role. It is refused when a self-signup policy creates a profile,\
+              \ so no NEW self-signup can be created against a role that holds it;\
+              \ note that this is checked at that moment rather than continuously,\
+              \ so adding it to a role your users can already sign up to grants it\
+              \ to those existing members at their next token. \n\n'context-directory-read'\
+              \ — read your tenant's app-context DIRECTORY (which app contexts exist,\
+              \ their roles and access profiles, and which contexts a given principal\
+              \ is in) across every context, not just the credential's own. It confers\
+              \ no data-plane reach — records, documents, folders, schemas and entities\
+              \ are outside it entirely — and no write. Its effect: GET /v1/principals/{id}/profiles\
+              \ for a principal OTHER than the credential's own returns that principal's\
+              \ access profile in the credential's own app context only, unless the\
+              \ credential holds this capability, in which case it returns the profile\
+              \ across every context you administer (the same answer a lookup of the\
+              \ credential's OWN principal always gets). Grant it only to an admin\
+              \ or support role, for the same reason as 'forensic-read': it is tenant-wide\
+              \ by design and not narrowed by the credential's own app context. It\
+              \ is refused when a self-signup policy creates a profile, so no NEW\
+              \ self-signup can be created against a role that holds it; that check\
+              \ runs at that moment rather than continuously, so adding it to a role\
+              \ your users can already sign up to grants it to those existing members\
+              \ at their next token. \n\n'delegate-mint' — mint a scoped API key (ssk_*)\
+              \ bound to a DIFFERENT principal than your own, when creating one via\
+              \ POST /v1/admin/keys/scoped. Without it, that endpoint only lets a\
+              \ scoped credential mint a key bound to itself; a root key is unaffected.\
+              \ The target must already be a member of your own app context, and the\
+              \ minted key's effective scope can never exceed your own — this capability\
+              \ lifts only the WHO bound, not the WHAT one. Grant it to an operator\
+              \ or automation role that provisions credentials on other members' behalf;\
+              \ it is tenant-wide by design (the credential it lets you mint IS someone\
+              \ else, wherever that identity is later used). It is refused when a\
+              \ self-signup policy creates a profile, so no NEW self-signup can be\
+              \ created against a role that holds it; that check runs at that moment\
+              \ rather than continuously, so adding it to a role your users can already\
+              \ sign up to grants it to those existing members at their next token.\
+              \ \n\nThe list is CLOSED and versioned with the API: a later release\
+              \ may accept further names, and a name this release does not accept\
+              \ is rejected when you author the clause. Three rules, all fail-closed:\
+              \ an ABSENT or empty list grants NO capability (absence is silence,\
+              \ not a wildcard); an UNRECOGNIZED name denies this whole clause rather\
+              \ than being ignored, so a typo fails loudly at the first request instead\
+              \ of silently downgrading the grant; and a '*' in allowed_actions confers\
+              \ ZERO capabilities — '*' is not a wildcard here and is rejected as\
+              \ a name. Each capability's reach is fixed by its own definition, stated\
+              \ above; the clause carries NAMES ONLY. Where a capability acts on individual\
+              \ records this clause's data_scope narrows it too, but the name in this\
+              \ release is not per-record — 'member-lifecycle' is bounded by the app\
+              \ contexts the credential can reach, so data_scope does not narrow it."
+            example: "[\"member-lifecycle\"]"
       description: "Inline list of scope clauses granted directly to the invitee.\
         \ Provide this OR `roleId`, not both."
     AccessProfileRequest:
@@ -6407,9 +6803,11 @@ components:
           type: array
           description: "The role's permissions, expressed as one or more scope clauses.\
             \ An action is permitted if any clause allows it and that clause's data\
-            \ scope matches the target — with one exception, an identity entity's\
-            \ own-namespace dimension when creating it, which is server-assigned and\
-            \ therefore exempt from the match at creation time only."
+            \ scope matches the target — with two exceptions. An identity entity's\
+            \ own-namespace dimension when creating it is server-assigned and therefore\
+            \ exempt from the match at creation time only; and a clause naming a `granted_capabilities`\
+            \ entry this release does not recognize is denied entirely, so none of\
+            \ its actions apply."
           items:
             $ref: "#/components/schemas/ScopeClause"
         createdAt:
@@ -6449,12 +6847,15 @@ components:
         scopes:
           type: array
           description: "The role's permissions, as one or more scope clauses. Each\
-            \ clause has `allowed_actions` (a list of permitted verbs) and `data_scope`\
+            \ clause has `allowed_actions` (a list of permitted verbs), `data_scope`\
             \ (an attribute filter that restricts which records the actions apply\
-            \ to). An action is permitted if any clause allows that action and that\
-            \ clause's data scope matches the target record. To include records whose\
-            \ ownership field is null (account-level shared records), add `null` to\
-            \ the allowed values for that field. One exception applies when creating\
+            \ to), and an optional `granted_capabilities` list. An action is permitted\
+            \ if any clause allows that action and that clause's data scope matches\
+            \ the target record — with one caveat worth knowing before you use `granted_capabilities`:\
+            \ a clause naming a capability this release does not recognize is denied\
+            \ ENTIRELY, so its `allowed_actions` stop applying too. To include records\
+            \ whose ownership field is null (account-level shared records), add `null`\
+            \ to the allowed values for that field. One exception applies when creating\
             \ an identity entity: the entity's own-namespace dimension (`scope:<namespace>`)\
             \ takes the value of the ID the server is about to generate, so no clause\
             \ written beforehand could name it, and that one dimension is exempt from\
@@ -7186,6 +7587,7 @@ components:
         inference:
           $ref: "#/components/schemas/TenantInferenceSection"
       description: Full usage breakdown for a single environment
+      nullable: true
     TenantInferenceSection:
       type: object
       properties:
@@ -7202,9 +7604,13 @@ components:
           $ref: "#/components/schemas/TenantDetail"
         test:
           $ref: "#/components/schemas/TenantDetail"
-      description: Usage breakdown by environment (your live and test environments).
-        Your account totals at the top of the response equal the sum of live + test
-        for each metric.
+      description: "Usage breakdown by environment (your live and test environments).\
+        \ For a token with cross-context reach, your account totals at the top of\
+        \ the response equal the sum of live + test for each metric. For a token confined\
+        \ to a single app context, only the environment that context belongs to is\
+        \ populated — the other environment is `null` (you hold no context there,\
+        \ distinct from zero usage) — and the top-level totals already equal that\
+        \ one environment's narrowed figures."
     UsageReportResponse:
       type: object
       properties:
@@ -7424,8 +7830,8 @@ components:
         scopes:
           type: array
           description: "The document's scope ownership as canonical `namespace:value`\
-            \ entries (at most 2). `org` and `client` are built-in namespaces; any\
-            \ other is a custom scope you define. Set at creation, either explicitly\
+            \ entries (at most 2). `org` and `client` are reserved namespace names;\
+            \ any other is one you registered yourself. Set at creation, either explicitly\
             \ or automatically from the calling token's identity. Empty for a document\
             \ owned by a user alone (or unowned). Filter lists by these values with\
             \ `?scope=`."
@@ -7435,11 +7841,11 @@ components:
           items:
             type: string
             description: "The document's scope ownership as canonical `namespace:value`\
-              \ entries (at most 2). `org` and `client` are built-in namespaces; any\
-              \ other is a custom scope you define. Set at creation, either explicitly\
-              \ or automatically from the calling token's identity. Empty for a document\
-              \ owned by a user alone (or unowned). Filter lists by these values with\
-              \ `?scope=`."
+              \ entries (at most 2). `org` and `client` are reserved namespace names;\
+              \ any other is one you registered yourself. Set at creation, either\
+              \ explicitly or automatically from the calling token's identity. Empty\
+              \ for a document owned by a user alone (or unowned). Filter lists by\
+              \ these values with `?scope=`."
             example: "[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\",\"group:eng-team\"\
               ]"
         fileType:
@@ -7576,10 +7982,11 @@ components:
           type: array
           description: "The document's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-            , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
-            \ are custom scopes you define (lowercase, 2-32 chars). A `value` is 1-128\
-            \ characters: a letter or digit first, then letters, digits, `_` or `-`.\
-            \ Resolve a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            , \"group:eng-team\"]`. `org` and `client` are reserved namespace names,\
+            \ registered like any other; others are namespaces you registered yourself\
+            \ (lowercase, 2-32 chars). A `value` is 1-128 characters: a letter or\
+            \ digit first, then letters, digits, `_` or `-`. Resolve a namespace's\
+            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
             \ When supplied, this is the document's COMPLETE scope declaration: each\
             \ entry must fall inside the `data_scope` of a single clause of your credential\
             \ that also grants this write — your identity supplies the DEFAULT value\
@@ -7595,20 +8002,21 @@ components:
             type: string
             description: "The document's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-              , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
-              \ others are custom scopes you define (lowercase, 2-32 chars). A `value`\
-              \ is 1-128 characters: a letter or digit first, then letters, digits,\
-              \ `_` or `-`. Resolve a namespace's UUID from your own identifier with\
-              \ `GET /v1/entities/{namespace}?externalId=`. When supplied, this is\
-              \ the document's COMPLETE scope declaration: each entry must fall inside\
-              \ the `data_scope` of a single clause of your credential that also grants\
-              \ this write — your identity supplies the DEFAULT value when you state\
-              \ none, it does not limit which value you may state. An empty array\
-              \ creates a document owned by the calling user alone (the private tier),\
-              \ and requires a credential whose identity carries a user. Omit the\
-              \ field to inherit the token's full identity — the default. On update,\
-              \ omit to leave ownership unchanged, or supply the complete new selection\
-              \ (`[]` clears it). Filter lists by these values with `?scope=`."
+              , \"group:eng-team\"]`. `org` and `client` are reserved namespace names,\
+              \ registered like any other; others are namespaces you registered yourself\
+              \ (lowercase, 2-32 chars). A `value` is 1-128 characters: a letter or\
+              \ digit first, then letters, digits, `_` or `-`. Resolve a namespace's\
+              \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+              \ When supplied, this is the document's COMPLETE scope declaration:\
+              \ each entry must fall inside the `data_scope` of a single clause of\
+              \ your credential that also grants this write — your identity supplies\
+              \ the DEFAULT value when you state none, it does not limit which value\
+              \ you may state. An empty array creates a document owned by the calling\
+              \ user alone (the private tier), and requires a credential whose identity\
+              \ carries a user. Omit the field to inherit the token's full identity\
+              \ — the default. On update, omit to leave ownership unchanged, or supply\
+              \ the complete new selection (`[]` clears it). Filter lists by these\
+              \ values with `?scope=`."
             example: "[\"group:eng-team\"]"
         externalId:
           type: string
@@ -7923,10 +8331,11 @@ components:
           type: array
           description: "The document's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-            , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
-            \ are custom scopes you define (lowercase, 2-32 chars). A `value` is 1-128\
-            \ characters: a letter or digit first, then letters, digits, `_` or `-`.\
-            \ Resolve a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            , \"group:eng-team\"]`. `org` and `client` are reserved namespace names,\
+            \ registered like any other; others are namespaces you registered yourself\
+            \ (lowercase, 2-32 chars). A `value` is 1-128 characters: a letter or\
+            \ digit first, then letters, digits, `_` or `-`. Resolve a namespace's\
+            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
             \ When supplied, this is the document's COMPLETE scope declaration: each\
             \ entry must fall inside the `data_scope` of a single clause of your credential\
             \ that also grants this write — your identity supplies the DEFAULT value\
@@ -7941,19 +8350,19 @@ components:
             type: string
             description: "The document's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-              , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
-              \ others are custom scopes you define (lowercase, 2-32 chars). A `value`\
-              \ is 1-128 characters: a letter or digit first, then letters, digits,\
-              \ `_` or `-`. Resolve a namespace's UUID from your own identifier with\
-              \ `GET /v1/entities/{namespace}?externalId=`. When supplied, this is\
-              \ the document's COMPLETE scope declaration: each entry must fall inside\
-              \ the `data_scope` of a single clause of your credential that also grants\
-              \ this write — your identity supplies the DEFAULT value when you state\
-              \ none, it does not limit which value you may state. An empty array\
-              \ creates a document owned by the calling user alone (the private tier),\
-              \ and requires a credential whose identity carries a user. Omit the\
-              \ field to inherit the token's full identity — the default. Filter lists\
-              \ by these values with `?scope=`."
+              , \"group:eng-team\"]`. `org` and `client` are reserved namespace names,\
+              \ registered like any other; others are namespaces you registered yourself\
+              \ (lowercase, 2-32 chars). A `value` is 1-128 characters: a letter or\
+              \ digit first, then letters, digits, `_` or `-`. Resolve a namespace's\
+              \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+              \ When supplied, this is the document's COMPLETE scope declaration:\
+              \ each entry must fall inside the `data_scope` of a single clause of\
+              \ your credential that also grants this write — your identity supplies\
+              \ the DEFAULT value when you state none, it does not limit which value\
+              \ you may state. An empty array creates a document owned by the calling\
+              \ user alone (the private tier), and requires a credential whose identity\
+              \ carries a user. Omit the field to inherit the token's full identity\
+              \ — the default. Filter lists by these values with `?scope=`."
             example: "[\"group:eng-team\"]"
         externalId:
           type: string
@@ -8594,8 +9003,8 @@ components:
         scopes:
           type: array
           description: "The folder's scope ownership as canonical `namespace:value`\
-            \ entries (at most 2). `org` and `client` are built-in namespaces; any\
-            \ other is a custom scope you define. Set at creation, either explicitly\
+            \ entries (at most 2). `org` and `client` are reserved namespace names;\
+            \ any other is one you registered yourself. Set at creation, either explicitly\
             \ or automatically from the calling token's identity. Empty for a folder\
             \ owned by a user alone (or unowned)."
           example:
@@ -8604,10 +9013,10 @@ components:
           items:
             type: string
             description: "The folder's scope ownership as canonical `namespace:value`\
-              \ entries (at most 2). `org` and `client` are built-in namespaces; any\
-              \ other is a custom scope you define. Set at creation, either explicitly\
-              \ or automatically from the calling token's identity. Empty for a folder\
-              \ owned by a user alone (or unowned)."
+              \ entries (at most 2). `org` and `client` are reserved namespace names;\
+              \ any other is one you registered yourself. Set at creation, either\
+              \ explicitly or automatically from the calling token's identity. Empty\
+              \ for a folder owned by a user alone (or unowned)."
             example: "[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\",\"group:eng-team\"\
               ]"
         createdAt:
@@ -8667,10 +9076,11 @@ components:
           type: array
           description: "The folder's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-            , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
-            \ are custom scopes you define (lowercase, 2-32 chars). A `value` is 1-128\
-            \ characters: a letter or digit first, then letters, digits, `_` or `-`.\
-            \ Resolve a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            , \"group:eng-team\"]`. `org` and `client` are reserved namespace names,\
+            \ registered like any other; others are namespaces you registered yourself\
+            \ (lowercase, 2-32 chars). A `value` is 1-128 characters: a letter or\
+            \ digit first, then letters, digits, `_` or `-`. Resolve a namespace's\
+            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
             \ When supplied, this is the folder's COMPLETE scope declaration: each\
             \ entry must fall inside the `data_scope` of a single clause of your credential\
             \ that also grants this write — your identity supplies the DEFAULT value\
@@ -8686,20 +9096,20 @@ components:
             type: string
             description: "The folder's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-              , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
-              \ others are custom scopes you define (lowercase, 2-32 chars). A `value`\
-              \ is 1-128 characters: a letter or digit first, then letters, digits,\
-              \ `_` or `-`. Resolve a namespace's UUID from your own identifier with\
-              \ `GET /v1/entities/{namespace}?externalId=`. When supplied, this is\
-              \ the folder's COMPLETE scope declaration: each entry must fall inside\
-              \ the `data_scope` of a single clause of your credential that also grants\
-              \ this write — your identity supplies the DEFAULT value when you state\
-              \ none, it does not limit which value you may state. An empty array\
-              \ creates a folder owned by the calling user alone (the private tier),\
-              \ and requires a credential whose identity carries a user. Omit the\
-              \ field to inherit the token's full identity — the default. On update,\
-              \ omit to leave ownership unchanged, or supply the complete new selection\
-              \ (`[]` clears it)."
+              , \"group:eng-team\"]`. `org` and `client` are reserved namespace names,\
+              \ registered like any other; others are namespaces you registered yourself\
+              \ (lowercase, 2-32 chars). A `value` is 1-128 characters: a letter or\
+              \ digit first, then letters, digits, `_` or `-`. Resolve a namespace's\
+              \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+              \ When supplied, this is the folder's COMPLETE scope declaration: each\
+              \ entry must fall inside the `data_scope` of a single clause of your\
+              \ credential that also grants this write — your identity supplies the\
+              \ DEFAULT value when you state none, it does not limit which value you\
+              \ may state. An empty array creates a folder owned by the calling user\
+              \ alone (the private tier), and requires a credential whose identity\
+              \ carries a user. Omit the field to inherit the token's full identity\
+              \ — the default. On update, omit to leave ownership unchanged, or supply\
+              \ the complete new selection (`[]` clears it)."
             example: "[\"group:eng-team\"]"
         expectedVersion:
           type: integer
@@ -8882,6 +9292,9 @@ components:
           type: string
           description: Which of your app contexts an exchanged token targets. Must
             be an existing app context (create it first via `POST /v1/app-contexts`).
+            A credential authorized via the CLI bootstrap's provisioning capability
+            may only name the app context it is itself bound to; naming another one
+            is refused. A root API key may name any of its contexts.
           example: casework
         subClaim:
           type: string
@@ -9039,9 +9452,18 @@ components:
           example: true
         reserved:
           type: boolean
-          description: Whether this is a reserved built-in namespace (`org`/`client`).
-            Built-ins cannot be changed or deleted.
+          description: "Whether this namespace was provisioned by the platform rather\
+            \ than registered by you. Provisioned namespaces are ordinary registrations:\
+            \ you can change them, and you can delete one that no entity references."
           example: false
+        contextId:
+          type: string
+          description: "The app context that owns this registration, or null for a\
+            \ TENANT-WIDE registration visible to every app context (`org`/`client`,\
+            \ and any namespace registered without `?contextId=`). A context-owned\
+            \ registration's identity entities belong entirely to that context; a\
+            \ tenant-wide one's are account-wide, shared by every app context."
+          example: "null"
         defaultSchemaId:
           type: string
           description: "ID of the default record schema bound to entities in this\
@@ -9054,14 +9476,45 @@ components:
             \ scope dimensions at once during recordType schema resolution."
           format: int32
           example: 1500
+        membershipRecordType:
+          type: string
+          description: "The record type holding this namespace's membership grants,\
+            \ or null when this namespace declares no membership."
+          example: team_membership
+        membershipTargetField:
+          type: string
+          description: "The field on the membership record type naming the user each\
+            \ grant is for, or null."
+          example: targetUserId
+        membershipContextId:
+          type: string
+          description: "Which app context holds the membership records, or null."
+          example: default
+        membershipLevelField:
+          type: string
+          description: "The field on the membership record type naming a grant's level,\
+            \ or null when membership in this namespace is plain in-or-out."
+          example: grantLevel
+        membershipLevels:
+          type: array
+          description: "The complete set of level labels this namespace allows, or\
+            \ null. A role may name only these levels."
+          example:
+          - admin
+          - viewer
+          items:
+            type: string
+            description: "The complete set of level labels this namespace allows,\
+              \ or null. A role may name only these levels."
+            example: "[\"admin\",\"viewer\"]"
         createdAt:
           type: string
           description: "Timestamp when the namespace was registered, as an ISO-8601\
-            \ UTC timestamp. Absent for the reserved built-ins."
+            \ UTC timestamp."
           example: 2024-01-15T09:30:00Z
-      description: A scope-namespace registration — declares whether values in the
-        namespace resolve to identity entities. The reserved namespaces `org` and
-        `client` are always present as built-ins.
+      description: "A scope-namespace registration — declares whether values in the\
+        \ namespace resolve to identity entities. `org` and `client` are reserved\
+        \ namespace names, registered the same way as any other."
     NamespacePage:
       type: object
       properties:
@@ -9094,10 +9547,11 @@ components:
         namespace:
           type: string
           description: "The namespace to register: 2-32 characters, a lowercase letter\
-            \ first, then lowercase letters, digits, `_` or `-`. The reserved names\
-            \ `org` and `client` are built in and cannot be registered, changed, or\
-            \ deleted. Required on registration; on update it must match the path\
-            \ and is otherwise ignored (the namespace is immutable)."
+            \ first, then lowercase letters, digits, `_` or `-`. `org` and `client`\
+            \ are reserved names, registered the same way as any other namespace.\
+            \ Deleting any namespace — these two included — is refused while entities\
+            \ still reference it. Required on registration; on update it must match\
+            \ the path and is otherwise ignored (the namespace is immutable)."
           example: team
         entityBacked:
           type: boolean
@@ -9122,15 +9576,74 @@ components:
             \ used to break a tie when a caller holds two scope dimensions at once\
             \ during recordType schema resolution — the higher-ranked (more specific)\
             \ dimension's schema wins. Required on registration (no default); must\
-            \ be an integer between 0 and 1000000, unique across every namespace in\
-            \ your account, and not one of the two values reserved for the built-in\
-            \ namespaces (`org`=1000, `client`=2000). Optional on update — omit to\
-            \ leave it unchanged."
+            \ be an integer between 0 and 1000000, and unique across every namespace\
+            \ in your account — including `org` and `client`, once registered (`org`=1000,\
+            \ `client`=2000). Optional on update — omit to leave it unchanged."
           format: int32
           example: 1500
-      description: Request body for registering or updating a scope namespace. The
-        `namespace` is set on registration and cannot be changed afterwards; PUT updates
-        only `entityBacked` and `defaultSchemaId`.
+        membershipRecordType:
+          type: string
+          description: "Optional. The record type holding this namespace's MEMBERSHIP\
+            \ grants — the records that say which values of this namespace a given\
+            \ user belongs to. Supply it together with `membershipTargetField` and\
+            \ `membershipContextId`, or omit all three. Declaring it grants nobody\
+            \ anything on its own: a credential receives membership-derived access\
+            \ only if its own role or access profile asks for it by naming `${{ member.scope.<namespace>\
+            \ }}` in `data_scope`."
+          example: team_membership
+        membershipTargetField:
+          type: string
+          description: "Optional. The field on `membershipRecordType` naming the user\
+            \ a grant is FOR. It is an ordinary reference field, not an ownership\
+            \ field — the grant is owned by whoever created it, and the namespace\
+            \ value it applies to is the grant's own scope stamp, which is what your\
+            \ placement authority is checked against when you write it."
+          example: targetUserId
+        membershipContextId:
+          type: string
+          description: "Optional. Which app context holds the membership records.\
+            \ Required alongside the other membership fields on a TENANT-WIDE registration\
+            \ (records always belong to one app context, while a tenant-wide registration\
+            \ is account-wide). Meaningless — and rejected if it disagrees — on a\
+            \ registration owned by one context via `?contextId=`: that context's\
+            \ grants live in its own context by construction, so this field need not\
+            \ repeat it."
+          example: default
+        membershipLevelField:
+          type: string
+          description: "Optional. The field on `membershipRecordType` naming a grant's\
+            \ LEVEL, so the same user can hold different levels in different values\
+            \ of this namespace — an admin of one team and a viewer of another. Supply\
+            \ it together with `membershipLevels`, or omit both for plain in-or-out\
+            \ membership. A role selects a level by naming `${{ member.scope.<namespace>:<level>\
+            \ }}`. Because the level is an ordinary field on an ordinary record, it\
+            \ is only as trustworthy as who may write that record type: grant create/update/delete\
+            \ on `membershipRecordType` to the people who ISSUE grants, never to the\
+            \ members those grants govern — a member who can update their own grant\
+            \ row can raise their own level, and it takes effect on their next request."
+          example: grantLevel
+        membershipLevels:
+          type: array
+          description: "Optional. The complete set of level labels this namespace\
+            \ allows, each following the namespace grammar. A role naming a level\
+            \ that is not in this list is rejected when it is authored, rather than\
+            \ silently matching nothing — so a typo is reported to whoever can fix\
+            \ it. Required alongside `membershipLevelField`."
+          example:
+          - admin
+          - viewer
+          items:
+            type: string
+            description: "Optional. The complete set of level labels this namespace\
+              \ allows, each following the namespace grammar. A role naming a level\
+              \ that is not in this list is rejected when it is authored, rather than\
+              \ silently matching nothing — so a typo is reported to whoever can fix\
+              \ it. Required alongside `membershipLevelField`."
+            example: "[\"admin\",\"viewer\"]"
+      description: "Request body for registering or updating a scope namespace. The\
+        \ `namespace` is set on registration and cannot be changed afterwards; PUT\
+        \ updates `entityBacked`, `defaultSchemaId`, `specificityRank`, and the membership\
+        \ fields — any field you omit keeps its stored value."
     DataScope:
       type: object
       properties:
@@ -9143,8 +9656,8 @@ components:
           type: array
           description: "Bound scope values, as `namespace:value` entries — for example\
             \ `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]`. The credential can\
-            \ only access records carrying these values. `org` and `client` are built-in\
-            \ namespaces; others are custom scopes you define."
+            \ only access records carrying these values. `org` and `client` are reserved\
+            \ namespace names; others are namespaces you registered yourself."
           example:
           - org:6ba7b810-9dad-11d1-80b4-00c04fd430c8
           items:
@@ -9152,7 +9665,7 @@ components:
             description: "Bound scope values, as `namespace:value` entries — for example\
               \ `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]`. The credential can\
               \ only access records carrying these values. `org` and `client` are\
-              \ built-in namespaces; others are custom scopes you define."
+              \ reserved namespace names; others are namespaces you registered yourself."
             example: "[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"]"
       description: "Identity binding for a scoped key: the user it acts as, the scope\
         \ values it is bound to, or both. Either field is omitted when the credential\
@@ -9345,8 +9858,8 @@ components:
         scopes:
           type: array
           description: "The record's scope ownership as canonical `namespace:value`\
-            \ entries (at most 2). `org` and `client` are built-in namespaces; any\
-            \ other is a custom scope you define. Set at creation, either explicitly\
+            \ entries (at most 2). `org` and `client` are reserved namespace names;\
+            \ any other is one you registered yourself. Set at creation, either explicitly\
             \ or automatically from the calling token's identity. Empty for a record\
             \ owned by a user alone (or unowned). Filter lists by these values with\
             \ `?scope=`."
@@ -9356,11 +9869,11 @@ components:
           items:
             type: string
             description: "The record's scope ownership as canonical `namespace:value`\
-              \ entries (at most 2). `org` and `client` are built-in namespaces; any\
-              \ other is a custom scope you define. Set at creation, either explicitly\
-              \ or automatically from the calling token's identity. Empty for a record\
-              \ owned by a user alone (or unowned). Filter lists by these values with\
-              \ `?scope=`."
+              \ entries (at most 2). `org` and `client` are reserved namespace names;\
+              \ any other is one you registered yourself. Set at creation, either\
+              \ explicitly or automatically from the calling token's identity. Empty\
+              \ for a record owned by a user alone (or unowned). Filter lists by these\
+              \ values with `?scope=`."
             example: "[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\",\"group:eng-team\"\
               ]"
         indexStatus:
@@ -9694,10 +10207,11 @@ components:
           type: array
           description: "The record's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-            , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
-            \ are custom scopes you define (lowercase, 2-32 chars). A `value` is 1-128\
-            \ characters: a letter or digit first, then letters, digits, `_` or `-`.\
-            \ Resolve a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            , \"group:eng-team\"]`. `org` and `client` are reserved namespace names,\
+            \ registered like any other; others are namespaces you registered yourself\
+            \ (lowercase, 2-32 chars). A `value` is 1-128 characters: a letter or\
+            \ digit first, then letters, digits, `_` or `-`. Resolve a namespace's\
+            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
             \ When supplied, this is the record's COMPLETE scope declaration: each\
             \ entry must fall inside the `data_scope` of a single clause of your credential\
             \ that also grants this write — your identity supplies the DEFAULT value\
@@ -9713,20 +10227,21 @@ components:
             type: string
             description: "The record's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-              , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
-              \ others are custom scopes you define (lowercase, 2-32 chars). A `value`\
-              \ is 1-128 characters: a letter or digit first, then letters, digits,\
-              \ `_` or `-`. Resolve a namespace's UUID from your own identifier with\
-              \ `GET /v1/entities/{namespace}?externalId=`. When supplied, this is\
-              \ the record's COMPLETE scope declaration: each entry must fall inside\
-              \ the `data_scope` of a single clause of your credential that also grants\
-              \ this write — your identity supplies the DEFAULT value when you state\
-              \ none, it does not limit which value you may state. An empty array\
-              \ creates a row owned by the calling user alone (the private tier),\
-              \ and requires a credential whose identity carries a user. Omit the\
-              \ field to inherit the token's full identity — the default. On update,\
-              \ omit to leave ownership unchanged, or supply the complete new selection\
-              \ (`[]` clears it). Filter lists by these values with `?scope=`."
+              , \"group:eng-team\"]`. `org` and `client` are reserved namespace names,\
+              \ registered like any other; others are namespaces you registered yourself\
+              \ (lowercase, 2-32 chars). A `value` is 1-128 characters: a letter or\
+              \ digit first, then letters, digits, `_` or `-`. Resolve a namespace's\
+              \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+              \ When supplied, this is the record's COMPLETE scope declaration: each\
+              \ entry must fall inside the `data_scope` of a single clause of your\
+              \ credential that also grants this write — your identity supplies the\
+              \ DEFAULT value when you state none, it does not limit which value you\
+              \ may state. An empty array creates a row owned by the calling user\
+              \ alone (the private tier), and requires a credential whose identity\
+              \ carries a user. Omit the field to inherit the token's full identity\
+              \ — the default. On update, omit to leave ownership unchanged, or supply\
+              \ the complete new selection (`[]` clears it). Filter lists by these\
+              \ values with `?scope=`."
             example: "[\"group:eng-team\"]"
         externalId:
           type: string
@@ -10350,7 +10865,13 @@ components:
             \ surfaces (for a shared type usable on both records and documents). This\
             \ drives surface-scoped schema listing (`GET /v1/schemas?surface=`) and\
             \ is enforced at bind time — for example, a document cannot bind a record-only\
-            \ schema."
+            \ schema. A `user`-surfaced schema is control-plane managed and can only\
+            \ be created, updated, or deleted with a root API key — a partner user\
+            \ is tenant-global, so its schema has one tenant-wide home. An `entity`-surfaced\
+            \ schema, by contrast, is writable by an ordinary scoped credential holding\
+            \ `schemas:c`/`u`/`d`, and is homed in that credential's own app context.\
+            \ `record`/`document` schemas are unaffected either way — any credential\
+            \ holding the matching scope may write them, as before."
           example:
           - record
           items:
@@ -10363,7 +10884,14 @@ components:
               \ several surfaces (for a shared type usable on both records and documents).\
               \ This drives surface-scoped schema listing (`GET /v1/schemas?surface=`)\
               \ and is enforced at bind time — for example, a document cannot bind\
-              \ a record-only schema."
+              \ a record-only schema. A `user`-surfaced schema is control-plane managed\
+              \ and can only be created, updated, or deleted with a root API key —\
+              \ a partner user is tenant-global, so its schema has one tenant-wide\
+              \ home. An `entity`-surfaced schema, by contrast, is writable by an\
+              \ ordinary scoped credential holding `schemas:c`/`u`/`d`, and is homed\
+              \ in that credential's own app context. `record`/`document` schemas\
+              \ are unaffected either way — any credential holding the matching scope\
+              \ may write them, as before."
             example: "[\"record\"]"
             enum:
             - record
@@ -10392,10 +10920,11 @@ components:
           type: array
           description: "The schema's scope ownership, as `namespace:value` entries\
             \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-            , \"group:eng-team\"]`. `org` and `client` are built-in namespaces; others\
-            \ are custom scopes you define (lowercase, 2-32 chars). A `value` is 1-128\
-            \ characters: a letter or digit first, then letters, digits, `_` or `-`.\
-            \ Resolve a namespace's UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+            , \"group:eng-team\"]`. `org` and `client` are reserved namespace names,\
+            \ registered like any other; others are namespaces you registered yourself\
+            \ (lowercase, 2-32 chars). A `value` is 1-128 characters: a letter or\
+            \ digit first, then letters, digits, `_` or `-`. Resolve a namespace's\
+            \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
             \ Optional — omit for an account-wide shared schema. When supplied, this\
             \ is the schema's COMPLETE scope declaration: each entry must fall inside\
             \ the `data_scope` of a single clause of your credential that also grants\
@@ -10409,18 +10938,19 @@ components:
             type: string
             description: "The schema's scope ownership, as `namespace:value` entries\
               \ (at most 2 namespaces) — for example `[\"org:6ba7b810-9dad-11d1-80b4-00c04fd430c8\"\
-              , \"group:eng-team\"]`. `org` and `client` are built-in namespaces;\
-              \ others are custom scopes you define (lowercase, 2-32 chars). A `value`\
-              \ is 1-128 characters: a letter or digit first, then letters, digits,\
-              \ `_` or `-`. Resolve a namespace's UUID from your own identifier with\
-              \ `GET /v1/entities/{namespace}?externalId=`. Optional — omit for an\
-              \ account-wide shared schema. When supplied, this is the schema's COMPLETE\
-              \ scope declaration: each entry must fall inside the `data_scope` of\
-              \ a single clause of your credential that also grants this write — your\
-              \ identity supplies the DEFAULT value when you state none, it does not\
-              \ limit which value you may state. On update, omit to leave ownership\
-              \ unchanged, or supply the complete new selection (`[]` clears it).\
-              \ Filter lists by these values with `?scope=`."
+              , \"group:eng-team\"]`. `org` and `client` are reserved namespace names,\
+              \ registered like any other; others are namespaces you registered yourself\
+              \ (lowercase, 2-32 chars). A `value` is 1-128 characters: a letter or\
+              \ digit first, then letters, digits, `_` or `-`. Resolve a namespace's\
+              \ UUID from your own identifier with `GET /v1/entities/{namespace}?externalId=`.\
+              \ Optional — omit for an account-wide shared schema. When supplied,\
+              \ this is the schema's COMPLETE scope declaration: each entry must fall\
+              \ inside the `data_scope` of a single clause of your credential that\
+              \ also grants this write — your identity supplies the DEFAULT value\
+              \ when you state none, it does not limit which value you may state.\
+              \ On update, omit to leave ownership unchanged, or supply the complete\
+              \ new selection (`[]` clears it). Filter lists by these values with\
+              \ `?scope=`."
             example: "[\"group:eng-team\"]"
         basedOn:
           type: string
@@ -11361,6 +11891,20 @@ components:
 
             This does NOT reopen the caller-supplied-scope concern named above: `signup_type` never selects a privilege level, only WHICH pre-authored, already-open policy entry to bind to. Every `selfSignupPolicies` entry is, by construction, something you already decided ANY caller who can present a token from this issuer may have — self-service, no invite, is exactly that decision, so there is no privilege differential between entries for a caller to escalate into by naming a different one than your frontend intended. The platform independently enforces that this is actually true (no entry may ever resolve to an elevated role) regardless of what this field's value is. Because "any caller who can present a token from this issuer" is the real trust boundary, self-signup is only as narrow as your issuer's own audience — it is not a substitute for restricting who can obtain a token from your identity provider in the first place.
           example: practitioner
+        context_id:
+          type: string
+          description: "Selects which app context to target, for an issuer registered\
+            \ against more than one (each via its own `POST /v1/auth/issuers` row\
+            \ and a distinct `audience`). Not part of RFC 8693 — a Vectros-specific\
+            \ extension field, additive to the standard grant. Omit when your `subject_token`'s\
+            \ `aud` claim matches only one registered context (the common case, and\
+            \ unaffected by this field's addition — behavior is unchanged from before\
+            \ this field existed). When your token's `aud` claims could match MORE\
+            \ than one of your registered contexts, name the one you want; a mismatch\
+            \ (naming a context this issuer is not registered against) is refused\
+            \ identically to an unrecognized issuer — the response does not distinguish\
+            \ the two."
+          example: default
       description: RFC 8693 token-exchange request.
     ChatStreamEvent:
       type: object
