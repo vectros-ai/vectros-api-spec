@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.41.0"
+  version: "0.42.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -610,19 +610,19 @@ paths:
         \ app context is returned (with status 200) instead of creating a duplicate.\
         \ The response's `created` field (and the HTTP status — 201 when created,\
         \ 200 when an existing context was returned) tells the two apart. To overwrite\
-        \ an existing context's `name`/`description` instead of returning it unchanged,\
-        \ set `?upsert=true` (this also requires the `app-contexts:u` scope). The\
-        \ reserved `contextId` value `vectros-admin` cannot be created through this\
-        \ endpoint; it is provisioned automatically for your account. Requires the\
-        \ `app-contexts:c` scope."
+        \ an existing context's `name`/`description`/`companyName` instead of returning\
+        \ it unchanged, set `?upsert=true` (this also requires the `app-contexts:u`\
+        \ scope). The reserved `contextId` value `vectros-admin` cannot be created\
+        \ through this endpoint; it is provisioned automatically for your account.\
+        \ Requires the `app-contexts:c` scope."
       operationId: createAppContext
       parameters:
       - name: upsert
         in: query
         description: "When `true`, if an app context with the same `contextId` already\
-          \ exists its `name` and `description` are updated to the submitted values\
-          \ instead of being returned unchanged. Defaults to `false`. Requires the\
-          \ `app-contexts:u` scope in addition to `app-contexts:c`."
+          \ exists its `name`, `description`, and `companyName` are updated to the\
+          \ submitted values instead of being returned unchanged. Defaults to `false`.\
+          \ Requires the `app-contexts:u` scope in addition to `app-contexts:c`."
         schema:
           type: boolean
           default: false
@@ -972,10 +972,10 @@ paths:
       tags:
       - Auth
       summary: Update an app context
-      description: "Updates the name and/or description of an app context. This is\
-        \ a partial update: any field you omit (or send as null) keeps its existing\
-        \ value. The `contextId` is immutable and is taken from the URL path, so any\
-        \ `contextId` in the request body is ignored. Requires the `app-contexts:u`\
+      description: "Updates the name, description, and/or companyName of an app context.\
+        \ This is a partial update: any field you omit (or send as null) keeps its\
+        \ existing value. The `contextId` is immutable and is taken from the URL path,\
+        \ so any `contextId` in the request body is ignored. Requires the `app-contexts:u`\
         \ scope."
       operationId: updateAppContext
       parameters:
@@ -1784,6 +1784,25 @@ paths:
         schema:
           type: string
         example: PO-2024
+      - name: sortFrom
+        in: query
+        description: "Inclusive lower bound on the lookup field's sort key, narrowing\
+          \ a `value` match to documents at or after this point. Use with `value`;\
+          \ combine with `sortTo` to bound both ends. Give the bound in the same form\
+          \ as the sorted field's own values — epoch milliseconds when the lookup\
+          \ sorts by `createdAt` or `lastUpdated`. Documents with no value for the\
+          \ sorted field are never included in a bounded window."
+        schema:
+          type: string
+        example: 1735689600000
+      - name: sortTo
+        in: query
+        description: "Inclusive upper bound on the lookup field's sort key, narrowing\
+          \ a `value` match to documents at or before this point. Use with `value`;\
+          \ combine with `sortFrom`."
+        schema:
+          type: string
+        example: 1738368000000
       - name: startFrom
         in: query
         description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
@@ -5631,7 +5650,10 @@ paths:
         \ independent membership in this tenant for that same identity. When `sendEmail`\
         \ is false, the response includes the raw token and a ready-to-use accept\
         \ link so you can deliver the invitation through your own email provider.\
-        \ Requires the `users:c` scope."
+        \ Requires the `users:c` scope — or, for a credential scoped to a single app\
+        \ context, the `member-lifecycle` capability plus the matching `profiles:c`/`profiles:r`/`profiles:u`\
+        \ grant(s) in that context, as an equally sufficient alternative to every\
+        \ `users:c`/`users:r`/`users:u` requirement in this description."
       operationId: createInvite
       requestBody:
         content:
@@ -5659,27 +5681,30 @@ paths:
             \ not an https domain URL, a `ttlSeconds` outside the allowed range, or\
             \ an `accessProfile.roleId` that does not name a role in this app context."
         "403":
-          description: "Your token lacks the `users:c` scope, or is bound to a different\
-            \ app context."
+          description: "Your token lacks the `users:c` scope (or the `member-lifecycle`\
+            \ capability plus the matching `profiles:<verb>` grant), or is bound to\
+            \ a different app context."
         "404":
           description: The referenced app context does not exist in your account.
         "409":
           description: "Email already in use IN THIS APP CONTEXT: an active or suspended\
             \ member of this context already has it, or an outstanding invitation\
             \ already exists for this context and your token lacks the `users:r` and\
-            \ `users:u` scopes needed to resend it. Also returned when the email resolves\
-            \ to a SUSPENDED identity anywhere in this tenant (a suspended member\
-            \ is never granted a new context implicitly — reactivate them first),\
-            \ or when it resolves to an ACTIVE or still-PENDING identity elsewhere\
-            \ in the tenant and your token lacks the scope the resulting grant/attach\
-            \ requires (`users:r` for an active identity; `users:r`+`users:u` for\
-            \ a still-pending one). These cases are deliberately indistinguishable\
-            \ to a scoped credential — so the error cannot be used to work out WHICH\
-            \ of them applies, i.e. where/why in this tenant the address is unavailable.\
-            \ A root API key receives a structured body with the `email_already_associated`\
-            \ error code for the suspended case, since it can already enumerate its\
-            \ own users directly. An email that already has an identity in your OTHER\
-            \ tenant does NOT 409 — see the summary above."
+            \ `users:u` scopes (or the `member-lifecycle`-capability equivalent) needed\
+            \ to resend it. Also returned when the email resolves to a SUSPENDED identity\
+            \ anywhere in this tenant (a suspended member is never granted a new context\
+            \ implicitly — reactivate them first), or when it resolves to an ACTIVE\
+            \ or still-PENDING identity elsewhere in the tenant and your token lacks\
+            \ the scope the resulting grant/attach requires (`users:r` for an active\
+            \ identity; `users:r`+`users:u` for a still-pending one — or, again, the\
+            \ matching `member-lifecycle`-capability elevation). These cases are deliberately\
+            \ indistinguishable to a scoped credential — so the error cannot be used\
+            \ to work out WHICH of them applies, i.e. where/why in this tenant the\
+            \ address is unavailable. A root API key receives a structured body with\
+            \ the `email_already_associated` error code for the suspended case, since\
+            \ it can already enumerate its own users directly. An email that already\
+            \ has an identity in your OTHER tenant does NOT 409 — see the summary\
+            \ above."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5709,7 +5734,9 @@ paths:
         \ any previously issued link for this invitation, so only the newest link\
         \ works. The invitee's pending permissions are left unchanged. Because this\
         \ rotates a credential on an existing invitation, it requires the `users:c`,\
-        \ `users:r` and `users:u` scopes."
+        \ `users:r` and `users:u` scopes — or, for a credential scoped to a single\
+        \ app context, the `member-lifecycle` capability plus the matching `profiles:c`/`profiles:r`/`profiles:u`\
+        \ grant(s) in that context."
       operationId: resendInvite
       requestBody:
         content:
@@ -5728,7 +5755,9 @@ paths:
           description: "Validation error: malformed email, missing context, or an\
             \ invalid `acceptUrl` / `ttlSeconds`."
         "403":
-          description: "Your token lacks the `users:c`, `users:r` or `users:u` scope."
+          description: "Your token lacks the `users:c`, `users:r` or `users:u` scope\
+            \ (or the `member-lifecycle` capability plus the matching `profiles:<verb>`\
+            \ grant)."
         "404":
           description: No pending invitation matches the supplied email and app context.
         "429":
@@ -6034,9 +6063,11 @@ paths:
       description: "Runs hybrid search over your indexed content, then streams a model\
         \ answer grounded in the top results. The SSE stream emits a `search_results`\
         \ event first (carrying the matched results and their metadata), an optional\
-        \ `truncation_warning` if lower-scoring results were dropped to fit the model's\
-        \ context window, then `content_delta` chunks, and finally a terminal `done`\
-        \ event. Requires the `inference:r` scope."
+        \ `truncation_warning` if some retrieved results were dropped before the prompt\
+        \ was built — either because they didn't fit the model's context window or\
+        \ because a result had no groundable text to include — then `content_delta`\
+        \ chunks, and finally a terminal `done` event. Requires the `inference:r`\
+        \ scope."
       operationId: ragInference
       requestBody:
         content:
@@ -6765,7 +6796,7 @@ components:
           type: array
           description: "Named platform capabilities this clause grants — bounded effects\
             \ that reach across a partition boundary, which allowed_actions cannot\
-            \ express. \n\nFour names are accepted in this release. \n\n'member-lifecycle'\
+            \ express. \n\nFive names are accepted in this release. \n\n'member-lifecycle'\
             \ — create and remove identities in your tenant. Adding someone who already\
             \ has an identity here resolves them by email or externalId as part of\
             \ that operation; it does not let the credential look an identity up on\
@@ -6813,7 +6844,30 @@ components:
             \ so no NEW self-signup can be created against a role that holds it; that\
             \ check runs at that moment rather than continuously, so adding it to\
             \ a role your users can already sign up to grants it to those existing\
-            \ members at their next token. \n\nThe list is CLOSED and versioned with\
+            \ members at their next token. \n\n'delegate-principal-stamp' — when creating\
+            \ a record, stamp a userId belonging to someone else in your tenant instead\
+            \ of only your own. Without it, a userId on create must match the credential's\
+            \ own identity or the request is rejected. This capability does not by\
+            \ itself admit any value: the SAME data_scope clause that already authorizes\
+            \ the write must ALSO explicitly name userId (a clause silent on userId\
+            \ still denies), so you keep exact, per-value control over which principals\
+            \ may be named. The capability itself does NOT need to live on that same\
+            \ clause — a role composed from separate roleIds, one contributing the\
+            \ capability and another the admitting data_scope, is checked the same\
+            \ as a role that declares both on one clause; what must be co-located\
+            \ is the write's own verb and its userId admission, not the capability.\
+            \ It confers no ability to act as that person — the credential never gains\
+            \ their authority, only the ability to label a record as theirs, which\
+            \ becomes usable only once they authenticate with their own credential.\
+            \ Unlike the three capabilities above, its reach is NOT tenant-wide: it\
+            \ is bounded by the SAME record type and app context your data_scope clause\
+            \ already confines the write to. It applies to record creation only —\
+            \ an update can never reassign userId, with or without this capability.\
+            \ Grant it to an admin role that provisions membership-shaped records\
+            \ on behalf of known users. Unlike the three capabilities above, it is\
+            \ NOT refused when a self-signup policy creates a profile — a context\
+            \ founder can hold it immediately so they can onboard teammates from the\
+            \ moment their context exists. \n\nThe list is CLOSED and versioned with\
             \ the API: a later release may accept further names, and a name this release\
             \ does not accept is rejected when you author the clause. Three rules,\
             \ all fail-closed: an ABSENT or empty list grants NO capability (absence\
@@ -6832,7 +6886,7 @@ components:
             type: string
             description: "Named platform capabilities this clause grants — bounded\
               \ effects that reach across a partition boundary, which allowed_actions\
-              \ cannot express. \n\nFour names are accepted in this release. \n\n\
+              \ cannot express. \n\nFive names are accepted in this release. \n\n\
               'member-lifecycle' — create and remove identities in your tenant. Adding\
               \ someone who already has an identity here resolves them by email or\
               \ externalId as part of that operation; it does not let the credential\
@@ -6882,19 +6936,43 @@ components:
               \ created against a role that holds it; that check runs at that moment\
               \ rather than continuously, so adding it to a role your users can already\
               \ sign up to grants it to those existing members at their next token.\
-              \ \n\nThe list is CLOSED and versioned with the API: a later release\
-              \ may accept further names, and a name this release does not accept\
-              \ is rejected when you author the clause. Three rules, all fail-closed:\
-              \ an ABSENT or empty list grants NO capability (absence is silence,\
-              \ not a wildcard); an UNRECOGNIZED name denies this whole clause rather\
-              \ than being ignored, so a typo fails loudly at the first request instead\
-              \ of silently downgrading the grant; and a '*' in allowed_actions confers\
-              \ ZERO capabilities — '*' is not a wildcard here and is rejected as\
-              \ a name. Each capability's reach is fixed by its own definition, stated\
-              \ above; the clause carries NAMES ONLY. Where a capability acts on individual\
-              \ records this clause's data_scope narrows it too, but the name in this\
-              \ release is not per-record — 'member-lifecycle' is bounded by the app\
-              \ contexts the credential can reach, so data_scope does not narrow it."
+              \ \n\n'delegate-principal-stamp' — when creating a record, stamp a userId\
+              \ belonging to someone else in your tenant instead of only your own.\
+              \ Without it, a userId on create must match the credential's own identity\
+              \ or the request is rejected. This capability does not by itself admit\
+              \ any value: the SAME data_scope clause that already authorizes the\
+              \ write must ALSO explicitly name userId (a clause silent on userId\
+              \ still denies), so you keep exact, per-value control over which principals\
+              \ may be named. The capability itself does NOT need to live on that\
+              \ same clause — a role composed from separate roleIds, one contributing\
+              \ the capability and another the admitting data_scope, is checked the\
+              \ same as a role that declares both on one clause; what must be co-located\
+              \ is the write's own verb and its userId admission, not the capability.\
+              \ It confers no ability to act as that person — the credential never\
+              \ gains their authority, only the ability to label a record as theirs,\
+              \ which becomes usable only once they authenticate with their own credential.\
+              \ Unlike the three capabilities above, its reach is NOT tenant-wide:\
+              \ it is bounded by the SAME record type and app context your data_scope\
+              \ clause already confines the write to. It applies to record creation\
+              \ only — an update can never reassign userId, with or without this capability.\
+              \ Grant it to an admin role that provisions membership-shaped records\
+              \ on behalf of known users. Unlike the three capabilities above, it\
+              \ is NOT refused when a self-signup policy creates a profile — a context\
+              \ founder can hold it immediately so they can onboard teammates from\
+              \ the moment their context exists. \n\nThe list is CLOSED and versioned\
+              \ with the API: a later release may accept further names, and a name\
+              \ this release does not accept is rejected when you author the clause.\
+              \ Three rules, all fail-closed: an ABSENT or empty list grants NO capability\
+              \ (absence is silence, not a wildcard); an UNRECOGNIZED name denies\
+              \ this whole clause rather than being ignored, so a typo fails loudly\
+              \ at the first request instead of silently downgrading the grant; and\
+              \ a '*' in allowed_actions confers ZERO capabilities — '*' is not a\
+              \ wildcard here and is rejected as a name. Each capability's reach is\
+              \ fixed by its own definition, stated above; the clause carries NAMES\
+              \ ONLY. Where a capability acts on individual records this clause's\
+              \ data_scope narrows it too, but the name in this release is not per-record\
+              \ — 'member-lifecycle' is bounded by the app contexts the credential\
+              \ can reach, so data_scope does not narrow it."
             example: "[\"member-lifecycle\"]"
       description: "Inline list of scope clauses granted directly to the invitee.\
         \ Provide this OR `roleId`, not both."
@@ -7039,6 +7117,13 @@ components:
           type: string
           description: Free-text description of the app context.
           example: Internal engineering tooling
+        companyName:
+          type: string
+          description: "Display name for the organization deploying this app context,\
+            \ or absent if unset. Distinct from `name` (the app's own identity) —\
+            \ used to personalize platform-sent correspondence (e.g. sub-user invitation\
+            \ emails) with your own branding."
+          example: Acme Corp
         createdAt:
           type: string
           description: "When the app context was created, as an ISO-8601 UTC timestamp."
@@ -7104,6 +7189,13 @@ components:
           description: Optional free-text description of what this app context is
             for.
           example: Internal tooling for the engineering team
+        companyName:
+          type: string
+          description: "Optional display name for the organization deploying this\
+            \ app context — distinct from `name`, which is the app's own identity.\
+            \ Used to personalize platform-sent correspondence (e.g. sub-user invitation\
+            \ emails) with your own branding instead of a generic app name."
+          example: Acme Corp
         meteringAxis:
           type: string
           description: "Declares the per-principal metering axis for this app context\
@@ -8514,6 +8606,21 @@ components:
           description: Prefix to match for a prefix lookup (range-enabled string fields
             only). Mutually exclusive with `value` and `from`/`to`.
           example: PO-2024
+        sortFrom:
+          type: string
+          description: "Inclusive lower bound on the lookup field's sort key, narrowing\
+            \ a `value` match to documents at or after this point (#870). Use with\
+            \ `value`; combine with `sortTo` to bound both ends. Give the bound in\
+            \ the same form as the sorted field's own values — epoch milliseconds\
+            \ when the lookup sorts by `createdAt` or `lastUpdated`. Documents with\
+            \ no value for the sorted field are never included in a bounded window."
+          example: "1735689600000"
+        sortTo:
+          type: string
+          description: "Inclusive upper bound on the lookup field's sort key, narrowing\
+            \ a `value` match to documents at or before this point (#870). Use with\
+            \ `value`; combine with `sortFrom`."
+          example: "1738368000000"
         startFrom:
           type: string
           description: Pagination cursor. Pass the `nextCursor` from the previous
@@ -11532,11 +11639,17 @@ components:
           example: crm-12345
         score:
           type: number
-          description: The combined relevance score that fuses the text and semantic
-            signals (reciprocal rank fusion). This is the primary sort key — a higher
-            value means a more relevant result.
+          description: "The primary sort key — a higher value means a more relevant\
+            \ result — but its SCALE depends on `mode`. In HYBRID mode this is a Reciprocal\
+            \ Rank Fusion (RRF) value: 1/(60+rank) per leg the result appears in,\
+            \ summed across legs, so it is small and tightly clustered (a hit ranked\
+            \ top on one leg scores ~0.016; ranked top on both, ~0.033) and is NOT\
+            \ a 0-1 confidence — don't threshold against it as one. In TEXT- or SEMANTIC-only\
+            \ mode, this is that engine's own native score (roughly a 0-1 cosine similarity\
+            \ for SEMANTIC) on a genuinely different scale — never compare scores\
+            \ across modes."
           format: double
-          example: 0.85
+          example: 0.0327
         textScore:
           type: number
           description: "The keyword (BM25) relevance component of the score. Non-zero\
@@ -12690,8 +12803,13 @@ components:
             \ since."
         score:
           type: number
-          description: The combined relevance score from hybrid ranking. Higher is
-            more relevant.
+          description: "Higher is more relevant, but the SCALE depends on the search\
+            \ `mode`. In HYBRID mode this is a Reciprocal Rank Fusion (RRF) value:\
+            \ 1/(60+rank) per leg the result appears in, summed across legs — small\
+            \ and tightly clustered (a hit ranked top on one leg scores ~0.016; ranked\
+            \ top on both, ~0.033), not a 0-1 confidence. In TEXT- or SEMANTIC-only\
+            \ mode, this is that engine's own native score on a different scale —\
+            \ never compare scores across modes."
           format: double
         textScore:
           type: number
@@ -12796,9 +12914,11 @@ components:
     TruncationWarningEvent:
       required:
       - event
+      - noContentCount
       - reason
       - resultsRequested
       - resultsUsed
+      - truncatedCount
       - type
       type: object
       properties:
@@ -12814,22 +12934,39 @@ components:
           - truncation_warning
         resultsRequested:
           type: integer
-          description: The number of results retrieved before truncation.
+          description: The number of results retrieved before any were dropped.
           format: int32
         resultsUsed:
           type: integer
-          description: The number of results actually included in the prompt after
-            dropping lower-scoring overflow.
+          description: The number of results actually included in the prompt — `resultsRequested`
+            minus `truncatedCount` minus `noContentCount`.
+          format: int32
+        truncatedCount:
+          type: integer
+          description: How many of the dropped results were cut for context-window
+            budget reasons (lower-scoring overflow). 0 if none were.
+          format: int32
+        noContentCount:
+          type: integer
+          description: "How many of the dropped results had no groundable text to\
+            \ include at all, independent of budget. 0 if none were."
           format: int32
         reason:
           type: string
-          description: Why truncation occurred. Currently only `context_window_budget`
-            (the results did not fit the model's context window).
+          description: "A single human-readable summary of why results were dropped:\
+            \ `context_window_budget` (only the budget reason applied), `no_groundable_content`\
+            \ (only the no-content reason applied), or `context_window_budget_and_no_content`\
+            \ (both applied). A caller wanting exact attribution should read `truncatedCount`/`noContentCount`\
+            \ directly rather than parse this field."
           enum:
           - context_window_budget
-      description: "Emitted by `POST /v1/rag` when the retrieved results exceed the\
-        \ model's context window. Lower-scoring results are dropped before the prompt\
-        \ is built, so the answer is grounded on fewer results than were retrieved."
+          - no_groundable_content
+          - context_window_budget_and_no_content
+      description: "Emitted by `POST /v1/rag` when one or more retrieved results were\
+        \ dropped before the prompt was built, for either (or both) of two independent\
+        \ reasons: the results didn't fit the model's context window (`truncatedCount`),\
+        \ or a result had no groundable text to include at all (`noContentCount`)\
+        \ — so the answer is grounded on fewer results than were retrieved."
     RagRequest:
       required:
       - query
