@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.42.0"
+  version: "0.43.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -15,6 +15,10 @@ tags:
     description: Schema-validated structured records with search indexing
   - name: Schemas
     description: Define record types with field validation and lookup indexes
+  - name: Scripts
+    description: Store versioned script source, and run a stored script synchronously as one atomic transaction
+  - name: Triggers
+    description: Declare rules that invoke a script version on a schema record event, asynchronously and under the rule's own grant
   - name: Folders
     description: Organize documents and records into folder hierarchies
   - name: Identity
@@ -208,7 +212,12 @@ paths:
         \ needs nothing further; minting one bound to a DIFFERENT principal additionally\
         \ requires the `delegate-mint` capability (`granted_capabilities`) on your\
         \ credential — without it the request is refused. A root API key (`sk_`) is\
-        \ exempt from all three bounds."
+        \ exempt from all three bounds. The profile you name must be `active` AND\
+        \ the user you name must not be `SUSPENDED`: either is refused with `409`,\
+        \ and no root exemption applies to that. Both refusals stop ISSUANCE only.\
+        \ Suspending the profile additionally stops credentials already bound to it,\
+        \ within about five minutes; suspending the user does not stop their existing\
+        \ keys at all. A `PENDING` user is fine."
       operationId: createScopedKey
       requestBody:
         content:
@@ -248,6 +257,23 @@ paths:
             \ that exists but has no profile in this context return the identical\
             \ message (naming the access profile) — match on that message, not on\
             \ whether the user itself was found."
+        "409":
+          description: "Something the request references is suspended, so no key is\
+            \ minted. TWO distinct causes, with different remedies — read the message,\
+            \ which names which: (1) the referenced **access profile** exists but\
+            \ is not `active` — reactivate it with `PUT /v1/app-contexts/{contextId}/profiles/{principalId}`\
+            \ and `status: active`; or (2) the named **user** is `SUSPENDED` — reactivate\
+            \ them with `PUT /v1/users/{id}` and `status: ACTIVE`. (Note the two fields\
+            \ use different casing conventions: profile status is lowercase, user\
+            \ status is uppercase.) A `PENDING` user is fine — a pending invitation\
+            \ is a supported thing to mint against. **Both refusals prevent ISSUANCE;\
+            \ neither revokes anything**, and the two axes differ in what happens\
+            \ to credentials you have already handed out. Suspending the PROFILE also\
+            \ stops existing credentials bound to it, within about five minutes. Suspending\
+            \ the USER does NOT: their existing keys keep working indefinitely, because\
+            \ a user's status is not consulted when a credential authenticates — revoke\
+            \ those keys explicitly if that is what you need. Deliberately not a `403`\
+            \ — nothing is wrong with your credential."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -1300,19 +1326,24 @@ paths:
       - Auth
       summary: Get usage for a calendar month
       description: "Returns full usage detail for the requested calendar month, broken\
-        \ down by category (search, documents, and records) with per-category credit\
-        \ estimates and a split between your live and test environments. Defaults\
-        \ to the current month when `year` and `month` are omitted. Requires the `billing:r`\
-        \ scope on scoped tokens; API keys always have access. **A token confined\
-        \ to a single app context sees only that context's usage**: totals, the environment\
-        \ split, and the `contexts` breakdown narrow to it, and the environment your\
-        \ context is not bound to is omitted (`null`), not zeroed. Only a token with\
-        \ cross-context reach sees your full account-wide totals. Two exceptions to\
-        \ the narrowing, since they have no per-context breakdown to narrow to: `reads.calls.used`/`reads.dataOut.bytes`\
-        \ (metered per account, not per context) read as `0` for a confined token\
-        \ rather than a narrowed figure — the corresponding overage-credit charge\
-        \ fields narrow correctly; and `credits.limit` stays your whole plan's ceiling,\
-        \ so `credits.remaining` may overstate the account's true remaining room."
+        \ down by category (search, documents, records, and trigger-script execution\
+        \ time) with per-category credit estimates and a split between your live and\
+        \ test environments. Defaults to the current month when `year` and `month`\
+        \ are omitted. Requires the `billing:r` scope on scoped tokens; API keys always\
+        \ have access. **A token confined to a single app context sees only that context's\
+        \ usage**: totals, the environment split, and the `contexts` breakdown narrow\
+        \ to it, and the environment your context is not bound to is omitted (`null`),\
+        \ not zeroed. Only a token with cross-context reach sees your full account-wide\
+        \ totals. Two exceptions to the narrowing, since they have no per-context\
+        \ breakdown to narrow to: `reads.calls.used`/`reads.dataOut.bytes` (metered\
+        \ per account, not per context) read as `0` for a confined token rather than\
+        \ a narrowed figure — the corresponding overage-credit charge fields narrow\
+        \ correctly; and `credits.limit` stays your whole plan's ceiling, so `credits.remaining`\
+        \ may overstate the account's true remaining room. The `execution` section\
+        \ narrows correctly for a confined token, like the other per-context charge\
+        \ fields — but note its credits carry sub-credit remainders forward across\
+        \ your whole account for the period, so compare `execution.creditsMilli` against\
+        \ your account-wide figure rather than recomputing it from one context's `billableMillis`."
       operationId: getUsage
       parameters:
       - name: year
@@ -1585,10 +1616,14 @@ paths:
                 $ref: "#/components/schemas/DocumentResponse"
         "400":
           description: "The request was invalid (for example, the payload failed schema\
-            \ validation); or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference` field's\
-            \ target type has more than one schema across different owners in this\
-            \ context, so the reference cannot be resolved. This endpoint has no way\
-            \ to select one owner's schema today; contact support if you hit this."
+            \ validation); the new `schemaId` would move this document to a type on\
+            \ which its `externalId` is already taken by another document (an `externalId`\
+            \ identifies at most one document per type, so change the `externalId`\
+            \ or free the one in use — the error never identifies the other document);\
+            \ or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference` field's target\
+            \ type has more than one schema across different owners in this context,\
+            \ so the reference cannot be resolved. This endpoint has no way to select\
+            \ one owner's schema today; contact support if you hit this."
         "404":
           description: "No document with this ID exists in your account, or it is\
             \ outside your access scope."
@@ -1688,9 +1723,13 @@ paths:
         "400":
           description: "The request was invalid: an immutable field was sent, a top-level\
             \ field was set to `null`, or the merged result failed schema validation;\
-            \ or the ownership the row would end up with falls outside your credential's\
-            \ `data_scope`, because no single clause of it both authorizes this update\
-            \ and covers the resulting ownership."
+            \ the new `schemaId` would move this document to a type on which its `externalId`\
+            \ is already taken by another document (an `externalId` identifies at\
+            \ most one document per type, so change the `externalId` or free the one\
+            \ in use — the error never identifies the other document); or the ownership\
+            \ the row would end up with falls outside your credential's `data_scope`,\
+            \ because no single clause of it both authorizes this update and covers\
+            \ the resulting ownership."
         "403":
           description: The request tries to reassign the row's owning `userId`. The
             principal is attributed by the server from your credential and cannot
@@ -2366,7 +2405,9 @@ paths:
       description: "Updates the mutable fields of an entity. Omitted fields are preserved\
         \ (a null value does not clear a field), and the `payload` object is replaced\
         \ in full when supplied. Providing `scopes` replaces the entity's parent edges.\
-        \ Requires the `entities:u:<namespace>` scope."
+        \ Supplying a different `externalId` re-points the entity's identifier; it\
+        \ must still be unused in this namespace and app context. Requires the `entities:u:<namespace>`\
+        \ scope."
       operationId: updateEntity
       parameters:
       - name: namespace
@@ -2405,6 +2446,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EntityResponse"
+        "400":
+          description: "The request was invalid, or the `externalId` you supplied\
+            \ is already in use by another entity in this namespace and app context.\
+            \ An `externalId` identifies at most one entity per namespace within a\
+            \ placement — a namespace registered to one app context is a separate\
+            \ space from a tenant-wide namespace of the same name — so change it or\
+            \ free the one in use. The error never identifies the other entity."
         "404":
           description: No entity with this ID exists in this namespace.
         "429":
@@ -2997,9 +3045,10 @@ paths:
       tags:
       - Folders
       summary: Delete a folder
-      description: Permanently deletes a folder. The folder must be empty (contain
-        no documents or sub-folders) and must not be protected. Your context's root
-        folder is protected and cannot be deleted. Requires the `folders:d` scope.
+      description: "Permanently deletes a folder. The folder must be empty — it must\
+        \ contain no documents, no records, and no sub-folders — and must not be protected.\
+        \ Your context's root folder is protected and cannot be deleted. Requires\
+        \ the `folders:d` scope."
       operationId: deleteFolder
       parameters:
       - name: id
@@ -3011,8 +3060,10 @@ paths:
         "204":
           description: The folder was deleted. No response body is returned.
         "400":
-          description: The folder cannot be deleted because it still contains items
-            or is protected.
+          description: "The folder cannot be deleted because it still contains items\
+            \ (documents, records, or sub-folders) or is protected. Move or delete\
+            \ its contents first — `GET /v1/documents?folderId=`, `GET /v1/records?folderId=`\
+            \ and `GET /v1/folders?parentFolderId=` enumerate them."
         "404":
           description: No folder with the given ID exists in your account.
         "429":
@@ -3840,14 +3891,32 @@ paths:
     post:
       tags:
       - Records
-      summary: Batch write records (reserved — not yet implemented)
-      description: "Reserved endpoint for bulk record writes. The published response\
-        \ shape includes a per-item partial-failure envelope and an atomicity flag.\
-        \ It currently returns 501 (not implemented). The documented 200 response\
-        \ schema is the stable shape this endpoint will use once available, published\
-        \ now so SDK integrations against it will not break when it ships. Requires\
-        \ the `records:c` scope."
+      summary: Write multiple records in one call
+      description: |-
+        Writes up to 50 records (or 50 with `atomicity: all_or_nothing`) in a single request. Each item in `items` has exactly the same shape, and goes through exactly the same validation, authorization and idempotency rules, as the body of a single `POST /v1/records` — including schema validation, `externalId` idempotency, unique-field enforcement, and the `records:c:<type>` scope check, which is applied per item against that item's own record type. A batch is not a way to write a type your credential could not write one at a time.
+
+        `atomicity` selects how the batch commits. `best_effort` (the default) writes each item independently: some can succeed while others fail, and each item's own outcome is reported. `all_or_nothing` commits every item in one transaction — if any item fails, no record is created or updated at all, and every item that was itself fine reports `not_committed` while the ones that failed report why. Because the transaction is bounded by the number of underlying storage rows rather than by the number of records, a large `all_or_nothing` batch can be refused as too large to commit atomically even when it is within the item limit; the error says so, and nothing is written when it happens.
+
+        The response is HTTP 200 whenever the batch was processed at all — including when every item failed — so always inspect `results` rather than relying on the status code. Match each result to the item you sent using its `index`. Requires the `records:c` scope.
       operationId: batchWriteRecords
+      parameters:
+      - name: upsert
+        in: query
+        description: "Applies to every item, exactly as it does on a single `POST\
+          \ /v1/records`: when `true`, an item whose `externalId` already exists overwrites\
+          \ that record instead of returning it unchanged. Requires the `records:u:<type>`\
+          \ scope in addition to `records:c:<type>`, checked per item. Defaults to\
+          \ `false`."
+        schema:
+          type: boolean
+          default: false
+      - name: allowClear
+        in: query
+        description: Only relevant with `?upsert=true`; same meaning as on a single
+          `POST /v1/records`. Defaults to `false`.
+        schema:
+          type: boolean
+          default: false
       requestBody:
         content:
           application/json:
@@ -3856,32 +3925,26 @@ paths:
         required: true
       responses:
         "200":
-          description: Per-item write outcomes. This is the reserved response shape;
-            the endpoint does not yet return it.
+          description: The batch was processed. Inspect the per-item `results` — this
+            status does not mean every item succeeded.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/BatchWriteResponse"
+        "400":
+          description: "The request body is missing or malformed, `atomicity` is not\
+            \ one of the two allowed values, or `items` exceeds the limit for the\
+            \ chosen atomicity."
         "403":
           description: Your API key or token lacks the `records:c` scope required
-            for this operation.
-        "501":
-          description: This endpoint is reserved but not yet implemented.
+            for this operation. A per-ITEM authorization failure is not a 403 — it
+            is reported as that item's `forbidden` result.
         "429":
-          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
-              schema:
-                type: integer
-            X-RateLimit-Limit:
-              description: The maximum number of requests permitted per minute on your plan.
-              schema:
-                type: integer
-            X-RateLimit-Remaining:
-              description: Requests remaining in the current window. Always 0 on a 429 response.
-              schema:
-                type: integer
+          description: "Too many items in your recent batches collided with values\
+            \ that already exist. Ordinary batch use does not approach this limit\
+            \ — a bulk import of your own records spends none of it, because re-submitting\
+            \ a record you already own is an idempotent match rather than a collision.\
+            \ Retry after the window resets (see the `Retry-After` header)."
       security:
         - BearerAuth: []
   /v1/records:
@@ -4862,7 +4925,10 @@ paths:
       summary: Update a record schema
       description: "Updates a record schema. Fields you omit are preserved; `typeName`\
         \ is immutable and cannot be changed. Collection fields (`fields`, `lookupFields`,\
-        \ `renderHints`, `capabilities`) are replaced in full when supplied. Requires\
+        \ `renderHints`, `capabilities`) are replaced in full when supplied. Because\
+        \ `capabilities` is replaced in full, omitting `triggersEnabled` clears it\
+        \ — the request is refused with 409 if that would disable triggers while trigger\
+        \ rules still fire off this schema, so delete those rules first. Requires\
         \ the `schemas:u` scope."
       operationId: updateSchema
       parameters:
@@ -4890,7 +4956,9 @@ paths:
           description: "The request body failed validation; or the ownership the row\
             \ would end up with falls outside your credential's `data_scope`, because\
             \ no single clause of it both authorizes this update and covers the resulting\
-            \ ownership."
+            \ ownership; or removing this schema's ownership would leave the `typeName`\
+            \ with two shared base schemas, which is not allowed — a name has at most\
+            \ one."
         "403":
           description: "The request tries to reassign the row's owning `userId`. The\
             \ principal is attributed by the server from your credential and cannot\
@@ -4899,6 +4967,12 @@ paths:
             \ — user-surfaced schemas require a root API key."
         "404":
           description: No schema with this id exists in your account.
+        "409":
+          description: "The update would turn `capabilities.triggersEnabled` off,\
+            \ or would stop keeping a field inline (by dropping its `inline` flag,\
+            \ its `filterable` flag, or the lookup that carried it), while a trigger\
+            \ rule still fires off this schema or still projects that field. Delete\
+            \ or narrow those rules first."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -4924,8 +4998,9 @@ paths:
         \ 409 if records of this type still exist — delete those records first, since\
         \ every record must reference a live schema. A lineage base (a schema other\
         \ schemas declare `basedOn`) also cannot be deleted while any such variant\
-        \ still exists — delete the variant schema(s) first. Requires the `schemas:d`\
-        \ scope."
+        \ still exists — delete the variant schema(s) first. It is likewise refused\
+        \ while any trigger rule fires off this schema — delete those trigger rules\
+        \ first. Requires the `schemas:d` scope."
       operationId: deleteSchema
       parameters:
       - name: id
@@ -4997,6 +5072,310 @@ paths:
                 $ref: "#/components/schemas/ModelDataVersionPage"
         "404":
           description: No schema with this id exists in your account.
+      security:
+        - BearerAuth: []
+  /v1/scripts/execute:
+
+    post:
+      tags:
+      - Scripts
+      summary: "Run a stored script synchronously, as one atomic transaction"
+      description: |-
+        Runs a script you previously pushed to `POST /v1/scripts`, under your own credential, and returns what it returned. Every write the script makes is buffered and committed as ONE transaction after the script finishes: either all of them land or none do, and the response is sent only after they have committed — so everything in `result` is committed state or the script's own computation over it. On any failure the body is the standard error envelope and nothing the script staged is committed: its rows are written only when the transaction commits, and a document body or a large payload is DECIDED at that point and WRITTEN to storage only after the commit, so an aborted execution leaves nothing behind. The one residual sits after a successful commit, outside this response: if storing a body fails then, the row exists and the body does not until the platform's repair lands — so a `200` guarantees the rows, and a document's text should be read before it is relied on.
+
+        **Permission.** Requires the `scripts:x` scope — the permission to *execute* — separate from the `scripts:c` permission to push scripts. Bare `scripts:x` grants every script in the context; `scripts:x:<name>` grants exactly that script name, every version of it. Execution discloses no source, so `scripts:r` is not needed. Inside the script, every read and write is enforced by your credential's data scopes exactly as the equivalent REST call would be — `scripts:x` alone can read and write nothing.
+
+        **Input.** Your script sees `input.event` (the literal `"execute"`), `input.userId` (your credential's user id, or null), and `input.params` (the `input` object you sent, verbatim). That is the same `input` grammar a trigger rule uses, so one script can serve both by branching on `input.event`. `params` is not validated — a script that needs a shape checks for it and throws; the script's `declaredInputContract` is documentation for readers and is not enforced.
+
+        **Budget.** Seconds of useful work: the script has 15 s of wall clock (never more than 16) and a bounded number of statements and host calls; a runaway script is stopped early with `RESOURCE_LIMIT_EXCEEDED`. The transaction is bounded by the number of underlying storage rows it writes — 100 rows after merging — rather than by the number of entities: creating a folder costs 3 rows; creating a plain text document or a record costs 1 row plus one per range-indexed lookup field plus one per `reference` field. So "create a folder and file N documents" holds up to 97 plain documents, 48 with one range field or one reference, 32 with both; if a script exceeds the limit the error says so (`WRITE_BUFFER_CAP_EXCEEDED`, with `total` and `limit`) and nothing is committed. This request takes the write-path limits (burst, credit ceiling, principal quota) once, before the script runs — there is no free-read allowance here, so an account over its credit ceiling is refused even for a read-only script. Reads the script performs are metered as reads, writes as writes, and execution time beyond what those operations include is charged as script execution time (see `GET /v1/usage`).
+
+        **Reads inside the script.** A `get` sees the script's own staged writes. A list, query or lookup never shows a row the script has deleted, shows a row it re-saved with the updated content, and does not show a row it created — you hold that row's id from `create()`.
+
+        **Retries.** Send an optional `Idempotency-Key` header (1–128 characters of letters, digits, `.`, `_`, `:` or `-`) to make a retry safe: a request repeated under the same key within 24 hours receives the same response as the first attempt without executing again — when that first attempt SUCCEEDED (a duplicate still in flight is refused with `409 IDEMPOTENCY_IN_PROGRESS`; the same key on a different request is refused with `422 IDEMPOTENCY_KEY_REUSED`). A first attempt that FAILED with any other status is not remembered: the same key is free to try again, so a retry after a `400` or a `429` executes. If an execution's outcome cannot be determined — the script did not finish inside the budget while its writes may have committed — the response is `500 EXECUTION_OUTCOME_UNKNOWN` carrying `execution.id`, and a keyed retry receives that same answer: inspect what the script would have written, then use a NEW key for a new attempt. When a key is present the serialised `result` is capped at 16 KB instead of 256 KB. Without a key, a lost response cannot be distinguished from a failed one; re-read before retrying.
+      operationId: executeScript
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: "Optional. 1–128 characters of letters, digits, `.`, `_`, `:`\
+          \ or `-`. A request repeated under the same key within 24 hours, by the\
+          \ same credential, receives the first attempt's response without executing\
+          \ again — when that attempt succeeded or ended `EXECUTION_OUTCOME_UNKNOWN`;\
+          \ a failed attempt is not remembered. The body is compared byte for byte,\
+          \ so the same key with a differently formatted body is a different request\
+          \ (`422`). With a key present the serialised `result` is capped at 16 KB."
+        schema:
+          pattern: "^[A-Za-z0-9._:-]{1,128}$"
+          type: string
+          example: order-8412-attempt
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScriptExecuteRequest"
+        required: true
+      responses:
+        "200":
+          description: The script finished and its writes committed.
+          headers:
+            Idempotent-Replayed:
+              description: "Present, with the value `true`, when this response was\
+                \ replayed from a previous attempt under the same `Idempotency-Key`\
+                \ and nothing executed."
+              style: simple
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScriptExecuteResponse"
+        "400":
+          description: "The request was invalid (`scriptRef` missing or malformed;\
+            \ `input` not an object); the script threw (`SCRIPT_ERROR`, carrying the\
+            \ script's own message); the script exceeded its statement or host-call\
+            \ budget (`RESOURCE_LIMIT_EXCEEDED`); the transaction exceeded 100 rows\
+            \ (`WRITE_BUFFER_CAP_EXCEEDED`, with `total` and `limit`); or the script's\
+            \ return value exceeded the size cap (`RESULT_TOO_LARGE`, with `bytes`\
+            \ and `limit`). Nothing was committed."
+        "402":
+          description: Your monthly credit ceiling or a principal quota is reached;
+            the script did not run.
+        "403":
+          description: "Your credential lacks `scripts:x` (or `scripts:x:<name>` for\
+            \ this script), or the script called an operation your credential's data\
+            \ scopes do not permit (`AUTHORIZATION_DENIED`, naming the operation).\
+            \ Nothing was committed."
+        "404":
+          description: No stored script matches `scriptRef`.
+        "409":
+          description: "A row the script wrote was modified by another writer while\
+            \ the transaction was committing (`CONCURRENT_MODIFICATION`, naming the\
+            \ ids to re-read; nothing was written), or a request with this `Idempotency-Key`\
+            \ is still in progress (`IDEMPOTENCY_IN_PROGRESS`)."
+        "413":
+          description: The request body exceeds 256 KB.
+        "422":
+          description: "The `Idempotency-Key` was already used for a different request\
+            \ (`IDEMPOTENCY_KEY_REUSED`). The comparison is byte for byte on the request\
+            \ path and body: the same JSON with different whitespace or key order\
+            \ is a different request."
+        "429":
+          description: "The burst limit, the per-app concurrent-execution limit (`Retry-After:\
+            \ 2`) or the uniqueness-probe budget is reached; the script did not run."
+        "500":
+          description: "`EXECUTION_OUTCOME_UNKNOWN` — the outcome cannot be determined\
+            \ (see *Retries*); or an internal error, carrying a `correlationId` to\
+            \ quote to support."
+        "503":
+          description: "Writes are temporarily frozen for a scheduled migration, or\
+            \ this request could not be started within its time budget (`EXECUTION_NOT_STARTED`)\
+            \ or on a server still finishing a previous script (`EXECUTION_CONTAINER_BUSY`);\
+            \ retry after the `Retry-After` header (seconds, also in the body as `retryAfterSeconds`)."
+        "504":
+          description: The script exceeded its wall-clock budget (`TIMEOUT`). Nothing
+            was committed.
+      security:
+        - BearerAuth: []
+  /v1/scripts:
+
+    get:
+      tags:
+      - Scripts
+      summary: List script versions
+      description: "Returns a paginated list of your scripts. Pass `name` to list\
+        \ every version of one script name (oldest first); omit it for a flat list\
+        \ across every name in your account (newest first). Results are returned as\
+        \ a `{data, nextCursor}` envelope — pass `nextCursor` as `startFrom` to fetch\
+        \ the next page. Requires the `scripts:r` scope."
+      operationId: listScripts
+      parameters:
+      - name: name
+        in: query
+        description: "List every version of this script name (oldest first), instead\
+          \ of a flat cross-name list."
+        schema:
+          type: string
+        example: notify-assignee
+      - name: startFrom
+        in: query
+        description: Pagination cursor. Pass the `nextCursor` returned by the previous
+          page to fetch the next page; omit it for the first page. The cursor is **opaque**
+          — echo it back unchanged.
+        schema:
+          type: string
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
+      - name: limit
+        in: query
+        description: Maximum number of scripts to return per page. Must be between
+          1 and 100; defaults to 20.
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+          format: int64
+          default: 20
+        example: 20
+      responses:
+        "200":
+          description: "A page of script versions, returned as a `{data, nextCursor}`\
+            \ envelope. `nextCursor` is null when there are no more pages."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScriptPage"
+      security:
+        - BearerAuth: []
+    post:
+      tags:
+      - Scripts
+      summary: Push a new script version
+      description: "Stores a new version of a script object. Every POST creates a\
+        \ genuinely new version — this is NOT idempotent-by-name: pushing `name` again\
+        \ always creates a new row with `scriptVersion` auto-incremented (the first\
+        \ version pushed for a name is 1). `source` is stored as-is: nothing parses\
+        \ or validates it at push time. A version runs when a trigger rule references\
+        \ it (`POST /v1/triggers`) or when `POST /v1/scripts/execute` names it. Requires\
+        \ the `scripts:c` scope."
+      operationId: createScript
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScriptRequest"
+        required: true
+      responses:
+        "201":
+          description: A new script version was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScriptResponse"
+        "400":
+          description: "The request was invalid — for example, `name` was missing\
+            \ or malformed, or `source` was blank."
+        "403":
+          description: Your API key or token lacks the `scripts:c` scope required
+            to push a script.
+        "409":
+          description: "Another request pushed a new version of this script name at\
+            \ the same moment as this one. List `GET /v1/scripts?name=<name>` to find\
+            \ the current latest version, then push again."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+  /v1/scripts/{id}:
+
+    get:
+      tags:
+      - Scripts
+      summary: Get a script version by ID
+      description: Retrieves a single script version by its ID. Requires the `scripts:r`
+        scope.
+      operationId: getScript
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The script version was found and returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScriptResponse"
+        "404":
+          description: No script with the given ID exists in your account.
+      security:
+        - BearerAuth: []
+    put:
+      tags:
+      - Scripts
+      summary: Update a script (unsupported — scripts are immutable)
+      description: Scripts are immutable per version; this endpoint always returns
+        a 400 regardless of scope or credential — push a new version via `POST /v1/scripts`
+        instead.
+      operationId: updateScript
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScriptRequest"
+        required: true
+      responses:
+        "400":
+          description: Always returned — script versions are immutable.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+    delete:
+      tags:
+      - Scripts
+      summary: Delete a script version
+      description: Permanently deletes one script version by ID. Deleting one version
+        does not affect any other version of the same name. Requires the `scripts:d`
+        scope.
+      operationId: deleteScript
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: The script version was deleted. No response body is returned.
+        "404":
+          description: No script with the given ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
       security:
         - BearerAuth: []
   /v1/search:
@@ -5089,6 +5468,12 @@ paths:
               example:
                 token: st_eyJ...
                 expiresAt: 1705312200
+                resolvedScope:
+                  allowedActions:
+                  - records:crud
+                  - schemas:r
+                  identity:
+                    userId: 550e8400-e29b-41d4-a716-446655440000
         "400":
           description: "Invalid request — for example, a missing scope, or a user\
             \ or identity-entity ID that does not exist in your account."
@@ -5396,8 +5781,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/UserResponse"
         "400":
-          description: "Validation error: an immutable field was changed, or `email`\
-            \ was changed while an invitation to that user is still outstanding."
+          description: "Validation error: an immutable field was changed; `email`\
+            \ was changed while an invitation to that user is still outstanding; `status`\
+            \ was set to a value other than `ACTIVE` or `SUSPENDED`; or `status` was\
+            \ set to `PENDING`, which is server-managed and cannot be set here — including\
+            \ by echoing a pending user's own status back in a read-modify-write,\
+            \ so omit `status` from the body when updating a pending user's other\
+            \ fields."
         "404":
           description: No user with the given ID exists in your account. A context-confined
             credential also sees this when the user exists but holds no access profile
@@ -5847,6 +6237,11 @@ paths:
                 access_token: st_eyJ...
                 token_type: Bearer
                 expires_in: 900
+                resolvedScope:
+                  allowedActions:
+                  - records:crud
+                  identity:
+                    scope:org: orgB
         "400":
           description: "Malformed request, a named key is not a recognized `scope:<namespace>`,\
             \ the same namespace is named twice, or a requested value is not a plain\
@@ -5925,6 +6320,11 @@ paths:
                 issued_token_type: urn:ietf:params:oauth:token-type:access_token
                 token_type: Bearer
                 expires_in: 3600
+                resolvedScope:
+                  allowedActions:
+                  - records:crud
+                  identity:
+                    userId: 550e8400-e29b-41d4-a716-446655440000
         "400":
           description: "Malformed request, missing subject_token, unparseable JWT,\
             \ unsupported subject_token_type, or an unrecognized grant_type."
@@ -5953,6 +6353,311 @@ paths:
               description: Requests remaining in the current window. Always 0 on a 429 response.
               schema:
                 type: integer
+  /v1/trigger-failures:
+
+    get:
+      tags:
+      - Triggers
+      summary: List trigger execution failures
+      description: |-
+        Returns a page of trigger executions that failed — what went wrong, whether the platform will retry it, and which of your records and rules were involved. Use this to find automation that has stopped running.
+
+        A record appears once per FIRING, not once per attempt: if the platform retries a retryable failure, the same record's `attempts` count rises rather than a new record appearing. **If a retry later succeeds, the record is removed** — so this endpoint describes what is currently broken, not a permanent history. Records also expire 30 days after the firing first failed.
+
+        `detail` is safe to surface to your own users: it carries only your own content (a script's own thrown message) or public API vocabulary, never platform internals. For `INTERNAL_ERROR` it is absent and a `correlationId` is returned instead — quote that to support.
+
+        Scoped to your account and app context, derived from your token — never from input. Requires the `triggers:r` scope.
+      operationId: listTriggerFailures
+      parameters:
+      - name: ruleId
+        in: query
+        description: Return only failures of this trigger rule.
+        schema:
+          type: string
+        example: 3b1c9f2e7a5d8410f6c2e9a1b7d4038f5e6a91c2d7f0b3a4586c9e2f1d0a7b3c
+      - name: category
+        in: query
+        description: "Return only failures in this category (e.g. `SCRIPT_ERROR`,\
+          \ `TIMEOUT`, `AUTHORIZATION_DENIED`). Case-insensitive."
+        schema:
+          type: string
+        example: SCRIPT_ERROR
+      - name: retryable
+        in: query
+        description: Return only failures the platform will retry (`true`) or will
+          not (`false`).
+        schema:
+          type: boolean
+        example: false
+      - name: from
+        in: query
+        description: Return only failures that first occurred at or after this ISO-8601
+          UTC timestamp.
+        schema:
+          type: string
+        example: 2024-01-15T00:00:00Z
+      - name: to
+        in: query
+        description: Return only failures that first occurred before this ISO-8601
+          UTC timestamp.
+        schema:
+          type: string
+        example: 2024-01-16T00:00:00Z
+      - name: startFrom
+        in: query
+        description: Pagination cursor. Pass the `nextCursor` returned by the previous
+          page to fetch the next page; omit it for the first page. The cursor is **opaque**
+          — echo it back unchanged.
+        schema:
+          type: string
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
+      - name: limit
+        in: query
+        description: Maximum number of failures to return per page. Must be between
+          1 and 100; defaults to 20.
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+          format: int64
+          default: 20
+        example: 20
+      responses:
+        "200":
+          description: "A page of trigger execution failures, returned as a `{data,\
+            \ nextCursor}` envelope. `nextCursor` is null when there are no more pages."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriggerFailurePage"
+      security:
+        - BearerAuth: []
+  /v1/triggers:
+
+    get:
+      tags:
+      - Triggers
+      summary: List trigger rules
+      description: "Returns a paginated list of your trigger rules, newest first.\
+        \ Results are returned as a `{data, nextCursor}` envelope — pass `nextCursor`\
+        \ as `startFrom` to fetch the next page. Requires the `triggers:r` scope."
+      operationId: listTriggers
+      parameters:
+      - name: startFrom
+        in: query
+        description: Pagination cursor. Pass the `nextCursor` returned by the previous
+          page to fetch the next page; omit it for the first page. The cursor is **opaque**
+          — echo it back unchanged.
+        schema:
+          type: string
+        example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
+      - name: limit
+        in: query
+        description: Maximum number of trigger rules to return per page. Must be between
+          1 and 100; defaults to 20.
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+          format: int64
+          default: 20
+        example: 20
+      responses:
+        "200":
+          description: "A page of trigger rules, returned as a `{data, nextCursor}`\
+            \ envelope. `nextCursor` is null when there are no more pages."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriggerRulePage"
+      security:
+        - BearerAuth: []
+    post:
+      tags:
+      - Triggers
+      summary: Declare a trigger rule
+      description: "Declares a new trigger rule, or (with `?upsert=true`) reconciles\
+        \ an existing one of the same name to the submitted shape. Once declared,\
+        \ the rule fires: a record write on the named schema dispatches the referenced\
+        \ script, which runs asynchronously under this rule's own grant. Because that\
+        \ grant is executed, a scoped credential may not declare a trigger whose grant\
+        \ exceeds its own — such a request is rejected with a `403`, and a `roleIds`\
+        \ entry that does not resolve in this context with a `400`. Requires the `triggers:c`\
+        \ scope (also `triggers:u` when `?upsert=true` matches an existing row)."
+      operationId: createTrigger
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true`, if a trigger rule with the same `name` already\
+          \ exists it is reconciled to the submitted shape instead of being returned\
+          \ unchanged. Defaults to `false`. Requires the `triggers:u` scope in addition\
+          \ to `triggers:c`."
+        schema:
+          type: boolean
+          default: false
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerRuleRequest"
+        required: true
+      responses:
+        "201":
+          description: A new trigger rule was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriggerRuleResponse"
+        "200":
+          description: An existing trigger rule of this name was returned (plain create)
+            or reconciled (`?upsert=true`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriggerRuleResponse"
+        "400":
+          description: "The request was invalid — a malformed field, a missing `fields`\
+            \ declaration, an unresolvable scriptRef/firingSource.schemaId/roleIds\
+            \ entry, a manifest entry outside the recognized verb catalog, or a `fields`\
+            \ entry the schema does not keep inline."
+        "403":
+          description: "Your API key or token lacks the `triggers:c` scope required\
+            \ to declare a trigger, or the requested grant exceeds your own granted\
+            \ scope."
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+  /v1/triggers/{id}:
+
+    get:
+      tags:
+      - Triggers
+      summary: Get a trigger rule by ID
+      description: Retrieves a single trigger rule by its ID. Requires the `triggers:r`
+        scope.
+      operationId: getTrigger
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The trigger rule was found and returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriggerRuleResponse"
+        "404":
+          description: No trigger rule with the given ID exists in your account.
+      security:
+        - BearerAuth: []
+    put:
+      tags:
+      - Triggers
+      summary: Reconcile a trigger rule
+      description: "Updates an existing trigger rule in place. The rule's resulting\
+        \ grant must be within your own granted scope — including a grant you did\
+        \ not change, because a trigger's other fields (its `scriptRef`, its `principalId`)\
+        \ determine what that grant executes. `name`, `principalId` and `provisionedBy`\
+        \ are immutable once set. Requires the `triggers:u` scope."
+      operationId: updateTrigger
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerRuleRequest"
+        required: true
+      responses:
+        "200":
+          description: The trigger rule was updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriggerRuleResponse"
+        "400":
+          description: "The request was invalid — including an attempt to change an\
+            \ immutable field, a `roleIds` entry that does not resolve in this context,\
+            \ or a `fields` entry the (possibly re-targeted) schema does not keep\
+            \ inline."
+        "403":
+          description: "Your API key or token lacks the `triggers:u` scope, or the\
+            \ rule's resulting grant exceeds your own granted scope."
+        "404":
+          description: No trigger rule with the given ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+    delete:
+      tags:
+      - Triggers
+      summary: Delete a trigger rule
+      description: Permanently deletes one trigger rule by ID. Requires the `triggers:d`
+        scope.
+      operationId: deleteTrigger
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: The trigger rule was deleted. No response body is returned.
+        "404":
+          description: No trigger rule with the given ID exists in your account.
+        "429":
+          description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
   /v1/chat:
 
     post:
@@ -6665,6 +7370,26 @@ components:
             \ lacks the `users:r` scope in addition to this endpoint's own scope (email\
             \ is user data, gated the same as GET /v1/users)."
           example: alice@example.com
+        identityProjection:
+          type: object
+          additionalProperties: true
+          description: "Read-only IdP-asserted identity fields projected onto this\
+            \ profile, for the subset of golden identity claim names your app context\
+            \ declares via `identityProjectionClaims`. Filled in the FIRST TIME a\
+            \ sign-in for this principal can supply a value (usually at profile-creation,\
+            \ but not always — an invited member has none to project until they actually\
+            \ accept and sign in for the first time; it fills in on that first successful\
+            \ sign-in instead) — once filled, it does NOT update again if the underlying\
+            \ identity data changes later, and it cannot be modified via PUT/PATCH\
+            \ on this endpoint (platform-write-only). Absent when your context declares\
+            \ no projection, when none of the declared names have a captured value\
+            \ for this principal YET, or before this principal's first successful\
+            \ sign-in. **Returned to any caller who can read this profile at all (the\
+            \ same `profiles:r` grant this whole response is already gated behind)\
+            \ — it is NOT additionally gated the way `email` on this same response\
+            \ is.** Declaring `identityProjectionClaims` is itself the opt-in control\
+            \ (requires your platform provisioning credential to set), so declare\
+            \ only names you intend every `profiles:r` holder in this context to see."
       description: An access profile — the permission row for one principal within
         one app context.
     ScopeClause:
@@ -6677,26 +7402,32 @@ components:
           description: "Verbs this clause grants, in the compact 'resource:ops[:qualifier]'\
             \ form the authorizer honors. 'ops' are the letters c/r/u/d (create/read/update/delete)\
             \ plus 's' for sensitive-field REVEAL (PHI un-masking), e.g. 'records:cru',\
-            \ 'documents:r', 'records:rs:patient'. The 's' letter is fail-safe: absent\
-            \ it, sensitive fields are masked at the response boundary. The standard\
-            \ catalog is '*' (wildcard), 'keys:crd' (manage scoped API keys), 'profiles:cru'\
-            \ (manage access profiles), 'app-contexts:cru', 'users:crud' (manage your\
-            \ tenant's own users, including sub-user invitations), and 'logs:r'; you\
-            \ may add custom 'resource:ops' verbs for application-specific resources.\
-            \ Bare verbs like 'read'/'write'/'delete' are NOT grantable — use the\
-            \ resource:ops form. A ':qualifier' segment is honored only where it actually\
-            \ narrows the grant — 'records'/'entities' correlate it for every op;\
-            \ 'documents'/'users' correlate it ONLY for the 's' op (e.g. 'documents:s:invoice'\
-            \ restricts sensitive-field reveal to that type); 'profiles' correlates\
-            \ it ONLY for c/u/d (create/update/delete), confining WHICH principal\
-            \ the grant may act on — a literal 'usr_<id>' principal, or the bare 'self'\
-            \ sentinel, which matches only when the target principal is your own bound\
-            \ identity (a bare, unqualified 'profiles:cru' stays broad and unaffected).\
-            \ A qualifier on any other resource/op combination — e.g. 'documents:r:invoice'\
-            \ or 'profiles:r:self' — is rejected at authoring time rather than silently\
-            \ ignored. \n\nOne cross-field caveat: if this clause also carries a 'granted_capabilities'\
-            \ entry that this release does not recognize, the WHOLE clause is denied\
-            \ and none of these verbs apply. See that field."
+            \ 'documents:r', 'records:rs:patient', plus 'x' to EXECUTE a stored script\
+            \ synchronously ('scripts:x', or 'scripts:x:<name>' for one script name,\
+            \ every version). The 's' letter is fail-safe: absent it, sensitive fields\
+            \ are masked at the response boundary. The standard catalog is '*' (wildcard),\
+            \ 'keys:crd' (manage scoped API keys), 'profiles:cru' (manage access profiles),\
+            \ 'app-contexts:cru', 'users:crud' (manage your tenant's own users, including\
+            \ sub-user invitations), and 'logs:r'; you may add custom 'resource:ops'\
+            \ verbs for application-specific resources. Bare verbs like 'read'/'write'/'delete'\
+            \ are NOT grantable — use the resource:ops form. A ':qualifier' segment\
+            \ is honored only where it actually narrows the grant — 'records'/'entities'\
+            \ correlate it for every op; 'documents'/'users' correlate it ONLY for\
+            \ the 's' op (e.g. 'documents:s:invoice' restricts sensitive-field reveal\
+            \ to that type); 'profiles' correlates it ONLY for c/u/d (create/update/delete),\
+            \ confining WHICH principal the grant may act on — a literal 'usr_<id>'\
+            \ principal, or the bare 'self' sentinel, which matches only when the\
+            \ target principal is your own bound identity (a bare, unqualified 'profiles:cru'\
+            \ stays broad and unaffected); 'scripts' correlates it ONLY for the 'x'\
+            \ op, naming WHICH script may be executed ('scripts:x:create-case-folder'\
+            \ — every version of that name). A qualifier on any other resource/op\
+            \ combination — e.g. 'documents:r:invoice' or 'profiles:r:self' — is rejected\
+            \ at authoring time rather than silently ignored. The 'x' letter itself\
+            \ is accepted on every resource but has an effect only on 'scripts'; 'records:x'\
+            \ is valid and grants nothing. \n\nOne cross-field caveat: if this clause\
+            \ also carries a 'granted_capabilities' entry that this release does not\
+            \ recognize, the WHOLE clause is denied and none of these verbs apply.\
+            \ See that field."
           example:
           - records:cru
           - search:r
@@ -6705,27 +7436,33 @@ components:
             description: "Verbs this clause grants, in the compact 'resource:ops[:qualifier]'\
               \ form the authorizer honors. 'ops' are the letters c/r/u/d (create/read/update/delete)\
               \ plus 's' for sensitive-field REVEAL (PHI un-masking), e.g. 'records:cru',\
-              \ 'documents:r', 'records:rs:patient'. The 's' letter is fail-safe:\
-              \ absent it, sensitive fields are masked at the response boundary. The\
-              \ standard catalog is '*' (wildcard), 'keys:crd' (manage scoped API\
-              \ keys), 'profiles:cru' (manage access profiles), 'app-contexts:cru',\
-              \ 'users:crud' (manage your tenant's own users, including sub-user invitations),\
-              \ and 'logs:r'; you may add custom 'resource:ops' verbs for application-specific\
-              \ resources. Bare verbs like 'read'/'write'/'delete' are NOT grantable\
-              \ — use the resource:ops form. A ':qualifier' segment is honored only\
-              \ where it actually narrows the grant — 'records'/'entities' correlate\
-              \ it for every op; 'documents'/'users' correlate it ONLY for the 's'\
-              \ op (e.g. 'documents:s:invoice' restricts sensitive-field reveal to\
-              \ that type); 'profiles' correlates it ONLY for c/u/d (create/update/delete),\
-              \ confining WHICH principal the grant may act on — a literal 'usr_<id>'\
-              \ principal, or the bare 'self' sentinel, which matches only when the\
-              \ target principal is your own bound identity (a bare, unqualified 'profiles:cru'\
-              \ stays broad and unaffected). A qualifier on any other resource/op\
+              \ 'documents:r', 'records:rs:patient', plus 'x' to EXECUTE a stored\
+              \ script synchronously ('scripts:x', or 'scripts:x:<name>' for one script\
+              \ name, every version). The 's' letter is fail-safe: absent it, sensitive\
+              \ fields are masked at the response boundary. The standard catalog is\
+              \ '*' (wildcard), 'keys:crd' (manage scoped API keys), 'profiles:cru'\
+              \ (manage access profiles), 'app-contexts:cru', 'users:crud' (manage\
+              \ your tenant's own users, including sub-user invitations), and 'logs:r';\
+              \ you may add custom 'resource:ops' verbs for application-specific resources.\
+              \ Bare verbs like 'read'/'write'/'delete' are NOT grantable — use the\
+              \ resource:ops form. A ':qualifier' segment is honored only where it\
+              \ actually narrows the grant — 'records'/'entities' correlate it for\
+              \ every op; 'documents'/'users' correlate it ONLY for the 's' op (e.g.\
+              \ 'documents:s:invoice' restricts sensitive-field reveal to that type);\
+              \ 'profiles' correlates it ONLY for c/u/d (create/update/delete), confining\
+              \ WHICH principal the grant may act on — a literal 'usr_<id>' principal,\
+              \ or the bare 'self' sentinel, which matches only when the target principal\
+              \ is your own bound identity (a bare, unqualified 'profiles:cru' stays\
+              \ broad and unaffected); 'scripts' correlates it ONLY for the 'x' op,\
+              \ naming WHICH script may be executed ('scripts:x:create-case-folder'\
+              \ — every version of that name). A qualifier on any other resource/op\
               \ combination — e.g. 'documents:r:invoice' or 'profiles:r:self' — is\
-              \ rejected at authoring time rather than silently ignored. \n\nOne cross-field\
-              \ caveat: if this clause also carries a 'granted_capabilities' entry\
-              \ that this release does not recognize, the WHOLE clause is denied and\
-              \ none of these verbs apply. See that field."
+              \ rejected at authoring time rather than silently ignored. The 'x' letter\
+              \ itself is accepted on every resource but has an effect only on 'scripts';\
+              \ 'records:x' is valid and grants nothing. \n\nOne cross-field caveat:\
+              \ if this clause also carries a 'granted_capabilities' entry that this\
+              \ release does not recognize, the WHOLE clause is denied and none of\
+              \ these verbs apply. See that field."
             example: "[\"records:cru\",\"search:r\"]"
         data_scope:
           type: object
@@ -6974,8 +7711,58 @@ components:
               \ — 'member-lifecycle' is bounded by the app contexts the credential\
               \ can reach, so data_scope does not narrow it."
             example: "[\"member-lifecycle\"]"
-      description: "Inline list of scope clauses granted directly to the invitee.\
-        \ Provide this OR `roleId`, not both."
+        assignable_roles:
+          type: array
+          description: "roleIds this clause may compose into a delegated AccessProfile\
+            \ (additive role composition, roleIds) — orthogonal to data_scope/allowed_actions:\
+            \ narrows WHICH named roles this clause's authority may hand out, not\
+            \ how much data it reaches. Absent/null means no roleId restriction (default-open)\
+            \ — matching data_scope's existing default-open-for-reads posture; a tenant\
+            \ opts INTO the restriction by adding this field. Format-validated the\
+            \ same way roleId is everywhere else (lowercase letter first, then a-z\
+            \ 0-9 -, 3-31 characters). An empty list is rejected — omit the field\
+            \ for 'no restriction' instead — and a duplicate entry is rejected rather\
+            \ than silently deduplicated. Adoption note: once you add this field to\
+            \ a clause, that clause can only compose the roles the list NAMES — the\
+            \ restriction applies to every write the clause authorizes, not just newly-authored\
+            \ ones — so plan a rollout that names every roleId the restricted clause\
+            \ still needs BEFORE adding the field, not after. One further condition:\
+            \ a composed role that itself grants role-composing authority (profiles,\
+            \ users, keys or triggers with c, u or d, or a wildcard '*') must ALSO\
+            \ carry an assignable_roles no broader than yours, or composing it would\
+            \ hand the delegate unrestricted composing power one hop later; an ordinary\
+            \ role that grants no composing authority of its own needs no change,\
+            \ and composing one keeps working exactly as it does today."
+          example:
+          - case-handler
+          - hr-admin
+          items:
+            type: string
+            description: "roleIds this clause may compose into a delegated AccessProfile\
+              \ (additive role composition, roleIds) — orthogonal to data_scope/allowed_actions:\
+              \ narrows WHICH named roles this clause's authority may hand out, not\
+              \ how much data it reaches. Absent/null means no roleId restriction\
+              \ (default-open) — matching data_scope's existing default-open-for-reads\
+              \ posture; a tenant opts INTO the restriction by adding this field.\
+              \ Format-validated the same way roleId is everywhere else (lowercase\
+              \ letter first, then a-z 0-9 -, 3-31 characters). An empty list is rejected\
+              \ — omit the field for 'no restriction' instead — and a duplicate entry\
+              \ is rejected rather than silently deduplicated. Adoption note: once\
+              \ you add this field to a clause, that clause can only compose the roles\
+              \ the list NAMES — the restriction applies to every write the clause\
+              \ authorizes, not just newly-authored ones — so plan a rollout that\
+              \ names every roleId the restricted clause still needs BEFORE adding\
+              \ the field, not after. One further condition: a composed role that\
+              \ itself grants role-composing authority (profiles, users, keys or triggers\
+              \ with c, u or d, or a wildcard '*') must ALSO carry an assignable_roles\
+              \ no broader than yours, or composing it would hand the delegate unrestricted\
+              \ composing power one hop later; an ordinary role that grants no composing\
+              \ authority of its own needs no change, and composing one keeps working\
+              \ exactly as it does today."
+            example: "[\"case-handler\",\"hr-admin\"]"
+      description: Inline scope clauses granted to this trigger's principal — the
+        same shape a role's own clause list carries. Mutually exclusive with 'roleIds';
+        provide exactly one.
     AccessProfileRequest:
       required:
       - principalId
@@ -7080,8 +7867,24 @@ components:
             - org_sales
         status:
           type: string
-          description: Profile lifecycle status. `active` permits token minting; `suspended`
-            denies it (minting returns a uniform 403). Defaults to `active` when omitted.
+          description: "Profile lifecycle status. `active` permits credential issuance\
+            \ against this profile; `suspended` denies it. **Suspension stops NEW\
+            \ credentials immediately, on both issuance paths** (`0.43.0+`), with\
+            \ a different status code on each: minting a scoped API key at `POST /v1/admin/keys/scoped`\
+            \ returns `409` naming the suspended profile, and exchanging for a scoped\
+            \ token at `POST /v1/auth/token/exchange` returns the same uniform `403\
+            \ invalid_grant` it returns for every other rejection. Both read this\
+            \ field live on the request. **Credentials ALREADY issued are a separate\
+            \ matter:** an `ssk_*` or `st_*` handed out before you suspended may keep\
+            \ working for up to five minutes while the access-profile cache expires,\
+            \ and an `st_*` keeps its own one-hour lifetime regardless. So suspension\
+            \ is immediate containment against new credentials bound to THIS profile,\
+            \ and eventually-consistent (within five minutes) against credentials\
+            \ already issued against it. It does not reach sideways: a credential\
+            \ that resolves through this profile may, for the same five minutes, still\
+            \ act within its cached scope — including minting against a different,\
+            \ still-active principal it was already entitled to. To stop a specific\
+            \ credential now, revoke that credential. Defaults to `active` when omitted."
           example: active
           enum:
           - active
@@ -7164,6 +7967,30 @@ components:
             \ set but this is absent)."
           format: int32
           example: 10000
+        identityProjectionClaims:
+          type: array
+          description: "The golden IdP-asserted identity claim names projected, read-only,\
+            \ onto access profiles in this context. Filled in once per profile, the\
+            \ first time a sign-in for that principal can supply a value — usually\
+            \ at profile-creation, but for an invited member not until they actually\
+            \ accept and sign in, since there is nothing to project before that. Once\
+            \ filled, a profile's projection does not update again even if this declaration\
+            \ or the underlying identity data changes later. Absent when no projection\
+            \ is declared."
+          example:
+          - name
+          - phone
+          items:
+            type: string
+            description: "The golden IdP-asserted identity claim names projected,\
+              \ read-only, onto access profiles in this context. Filled in once per\
+              \ profile, the first time a sign-in for that principal can supply a\
+              \ value — usually at profile-creation, but for an invited member not\
+              \ until they actually accept and sign in, since there is nothing to\
+              \ project before that. Once filled, a profile's projection does not\
+              \ update again even if this declaration or the underlying identity data\
+              \ changes later. Absent when no projection is declared."
+            example: "[\"name\",\"phone\"]"
       description: "An app context: a namespace you define to group access profiles\
         \ and roles for one of your applications."
     AppContextRequest:
@@ -7220,6 +8047,43 @@ components:
             \ enabled on their account."
           format: int32
           example: 10000
+        identityProjectionClaims:
+          type: array
+          description: "Declares which golden IdP-asserted identity claim names (from\
+            \ your issuer's `capturedClaims`) get projected, read-only, onto access\
+            \ profiles in this context. Filled in once per profile, the first time\
+            \ a sign-in for that principal can supply a value — usually at profile-creation,\
+            \ but for an invited member not until they actually accept and sign in,\
+            \ since there is nothing to project before that. Once filled, a profile's\
+            \ projection does not update again even if this declaration or the underlying\
+            \ identity data changes later — changing this declaration affects only\
+            \ profiles that haven't been filled yet. Omit to leave unchanged; send\
+            \ an empty list to disable future projection. **Requires the platform\
+            \ provisioning capability** (the same authority your bootstrap credential\
+            \ already uses to declare namespaces and register trusted issuers) — an\
+            \ ordinary `app-contexts:u` credential may rename its own context but\
+            \ may not opt it into projecting IdP-golden identity data."
+          example:
+          - name
+          - phone
+          items:
+            type: string
+            description: "Declares which golden IdP-asserted identity claim names\
+              \ (from your issuer's `capturedClaims`) get projected, read-only, onto\
+              \ access profiles in this context. Filled in once per profile, the first\
+              \ time a sign-in for that principal can supply a value — usually at\
+              \ profile-creation, but for an invited member not until they actually\
+              \ accept and sign in, since there is nothing to project before that.\
+              \ Once filled, a profile's projection does not update again even if\
+              \ this declaration or the underlying identity data changes later — changing\
+              \ this declaration affects only profiles that haven't been filled yet.\
+              \ Omit to leave unchanged; send an empty list to disable future projection.\
+              \ **Requires the platform provisioning capability** (the same authority\
+              \ your bootstrap credential already uses to declare namespaces and register\
+              \ trusted issuers) — an ordinary `app-contexts:u` credential may rename\
+              \ its own context but may not opt it into projecting IdP-golden identity\
+              \ data."
+            example: "[\"name\",\"phone\"]"
       description: Request body for creating or updating an app context.
     RoleResponse:
       type: object
@@ -7664,6 +8528,19 @@ components:
           description: dataOut in milli-credit precision (exact)
           format: int64
           example: 0
+        scriptExecution:
+          type: integer
+          description: Credits consumed by script execution time (trigger rules and
+            synchronous `POST /v1/scripts/execute` calls) beyond the allowance your
+            billable operations earned. See the `execution` section for the millisecond
+            figures behind this charge.
+          format: int64
+          example: 0
+        scriptExecutionMilli:
+          type: integer
+          description: scriptExecution in milli-credit precision (exact)
+          format: int64
+          example: 0
       description: Per-category credit decomposition for the period. Each category
         has both a rounded value (for display) and a *Milli value (for exact math).
     Credits:
@@ -7783,6 +8660,66 @@ components:
         \ allowance and is billed at the data-out rate above it — see `reads.dataOut`.\
         \ This section is the document-download byte detail; its `credits` is always\
         \ 0 (the charge appears on the data-out line, not here)."
+    ExecutionSection:
+      type: object
+      properties:
+        executions:
+          type: integer
+          description: "Script executions metered this period, trigger and synchronous.\
+            \ Counts every execution that ran your script, including those that ended\
+            \ in an error and those that owed no charge; excludes firings refused\
+            \ before your script ran, which are never metered."
+          format: int64
+          example: 1240
+        totalMillis:
+          type: integer
+          description: "Total measured wall-clock time across those executions, in\
+            \ milliseconds"
+          format: int64
+          example: 402500
+        includedMillis:
+          type: integer
+          description: "Execution time included at no charge and actually applied\
+            \ against your execution time this period. A simple record write earns\
+            \ 350 ms; a document ingest 1000 ms; a read charged as overage 150 ms\
+            \ (a read inside your plan's allowance earns nothing). An indexed, oversized\
+            \ or foldered write earns a different amount because it is priced differently\
+            \ — this figure is the exact total applied, so you do not have to reconstruct\
+            \ it. Note it reports the allowance CONSUMED, not the allowance earned:\
+            \ an execution that finished well inside its included time contributes\
+            \ only what it used. It also absorbs the full duration of any execution\
+            \ we do not charge for at all — an internal platform error, for instance\
+            \ — so this figure can exceed what your own operations earned. Both are\
+            \ what keep the arithmetic above exact."
+          format: int64
+          example: 649000
+        billableMillis:
+          type: integer
+          description: "The portion of that time actually charged, after the 200 ms\
+            \ per-execution baseline and the included time above"
+          format: int64
+          example: 1500
+        credits:
+          type: integer
+          description: Credits charged for execution time (rounded down; see creditsMilli
+            for the exact value — a charge this small usually rounds to 0 whole credits)
+          format: int64
+          example: 0
+        creditsMilli:
+          type: integer
+          description: "credits in milli-credit precision (exact). 1 credit = 1000\
+            \ milli-credits, so 1500 billable milliseconds is 15 milli-credits."
+          format: int64
+          example: 15
+      description: "Script execution time this period — trigger rules and synchronous\
+        \ `POST /v1/scripts/execute` calls together — and the surcharge it incurred.\
+        \ The millisecond figures are SUPPORTING detail so you can verify the charge\
+        \ — the billing unit is credits, never milliseconds. To check it yourself:\
+        \ billableMillis is totalMillis, plus 200 ms per execution, less includedMillis;\
+        \ the charge is then 1 credit per 100 seconds of billableMillis, with sub-credit\
+        \ remainders carried forward within the period rather than rounded away. Because\
+        \ remainders carry, compare creditsMilli against your period-to-date total\
+        \ rather than against a single execution."
     IdentitySection:
       type: object
       properties:
@@ -8120,6 +9057,8 @@ components:
           $ref: "#/components/schemas/InferenceSection"
         reads:
           $ref: "#/components/schemas/ReadsSection"
+        execution:
+          $ref: "#/components/schemas/ExecutionSection"
         tenants:
           $ref: "#/components/schemas/Tenants"
         contexts:
@@ -8609,17 +9548,17 @@ components:
         sortFrom:
           type: string
           description: "Inclusive lower bound on the lookup field's sort key, narrowing\
-            \ a `value` match to documents at or after this point (#870). Use with\
-            \ `value`; combine with `sortTo` to bound both ends. Give the bound in\
-            \ the same form as the sorted field's own values — epoch milliseconds\
-            \ when the lookup sorts by `createdAt` or `lastUpdated`. Documents with\
-            \ no value for the sorted field are never included in a bounded window."
+            \ a `value` match to documents at or after this point. Use with `value`;\
+            \ combine with `sortTo` to bound both ends. Give the bound in the same\
+            \ form as the sorted field's own values — epoch milliseconds when the\
+            \ lookup sorts by `createdAt` or `lastUpdated`. Documents with no value\
+            \ for the sorted field are never included in a bounded window."
           example: "1735689600000"
         sortTo:
           type: string
           description: "Inclusive upper bound on the lookup field's sort key, narrowing\
-            \ a `value` match to documents at or before this point (#870). Use with\
-            \ `value`; combine with `sortFrom`."
+            \ a `value` match to documents at or before this point. Use with `value`;\
+            \ combine with `sortFrom`."
           example: "1738368000000"
         startFrom:
           type: string
@@ -8963,9 +9902,15 @@ components:
         externalId:
           type: string
           description: "Your own unique identifier for this entity, unique within\
-            \ its namespace. Used for idempotent create: if an entity with this `externalId`\
-            \ already exists in the namespace, it is returned instead of creating\
-            \ a duplicate."
+            \ its namespace and app context. Used for idempotent create: if an entity\
+            \ with this `externalId` already exists there, it is returned instead\
+            \ of creating a duplicate. A namespace registered to one app context is\
+            \ a separate space from a tenant-wide namespace of the same name, so the\
+            \ same `externalId` may legitimately exist in both. On update you may\
+            \ supply a different value to re-point the entity, but it must still be\
+            \ unused in that space — moving onto an `externalId` another entity holds\
+            \ is rejected with `400`. Two entities therefore cannot swap identifiers\
+            \ directly; move one to a temporary value first."
           example: team_eng_platform
         name:
           type: string
@@ -8973,8 +9918,11 @@ components:
           example: Platform Engineering
         status:
           type: string
-          description: Lifecycle status of the entity. `ACTIVE` entities can be used
-            normally; `SUSPENDED` entities are retained but blocked from new operations.
+          description: "Lifecycle status of the entity, which you set and read back.\
+            \ `SUSPENDED` records your own intent to retire the entity; the platform\
+            \ does not enforce it — a suspended entity can still be read, updated,\
+            \ and referenced by other records. Enforce it in your own application\
+            \ if you need it to have an effect."
           example: ACTIVE
           enum:
           - ACTIVE
@@ -9718,6 +10666,20 @@ components:
             \ an empty list) when self-signup is not configured for this issuer."
           items:
             $ref: "#/components/schemas/SelfSignupPolicy"
+        capturedClaims:
+          type: array
+          description: "Additional OIDC claim names captured from this issuer's tokens\
+            \ on every successful exchange, beyond `emailClaim`. Absent (not an empty\
+            \ list) when none are configured."
+          example:
+          - name
+          - phone_number
+          items:
+            type: string
+            description: "Additional OIDC claim names captured from this issuer's\
+              \ tokens on every successful exchange, beyond `emailClaim`. Absent (not\
+              \ an empty list) when none are configured."
+            example: "[\"name\",\"phone_number\"]"
       description: A registered trusted third-party IdP issuer.
     SelfSignupPolicy:
       required:
@@ -9844,6 +10806,32 @@ components:
             \ self-signup disabled (the default)."
           items:
             $ref: "#/components/schemas/SelfSignupPolicy"
+        capturedClaims:
+          type: array
+          description: "Opt-in additional identity-claim capture. A list of OIDC claim\
+            \ names — beyond `emailClaim`, which keeps its own dedicated field — to\
+            \ capture from this issuer's tokens on every successful token exchange\
+            \ and store as your tenant's golden IdP-asserted identity copy. Not a\
+            \ fixed set: name whatever claims this IdP actually asserts (standard,\
+            \ e.g. `name`/`phone_number`/`address`, or your IdP's own custom claims).\
+            \ Each claim is read from the verified token first, falling back to `userinfoUri`\
+            \ (if configured) only for names still missing after that. Omit entirely\
+            \ to capture nothing beyond email (the default)."
+          example:
+          - name
+          - phone_number
+          items:
+            type: string
+            description: "Opt-in additional identity-claim capture. A list of OIDC\
+              \ claim names — beyond `emailClaim`, which keeps its own dedicated field\
+              \ — to capture from this issuer's tokens on every successful token exchange\
+              \ and store as your tenant's golden IdP-asserted identity copy. Not\
+              \ a fixed set: name whatever claims this IdP actually asserts (standard,\
+              \ e.g. `name`/`phone_number`/`address`, or your IdP's own custom claims).\
+              \ Each claim is read from the verified token first, falling back to\
+              \ `userinfoUri` (if configured) only for names still missing after that.\
+              \ Omit entirely to capture nothing beyond email (the default)."
+            example: "[\"name\",\"phone_number\"]"
       description: Request body for registering a trusted third-party IdP issuer that
         BYO-IdP token exchange (`POST /v1/auth/token/exchange`) may accept a subject_token
         from.
@@ -9899,6 +10887,20 @@ components:
             for the full semantics — the same elevated-role restriction applies here.
           items:
             $ref: "#/components/schemas/SelfSignupPolicy"
+        capturedClaims:
+          type: array
+          description: Safe field — updatable. Omit to leave unchanged; pass an empty
+            list to stop capturing any claim beyond email. See `IssuerRequest.capturedClaims`
+            for the full semantics.
+          example:
+          - name
+          - phone_number
+          items:
+            type: string
+            description: Safe field — updatable. Omit to leave unchanged; pass an
+              empty list to stop capturing any claim beyond email. See `IssuerRequest.capturedClaims`
+              for the full semantics.
+            example: "[\"name\",\"phone_number\"]"
       description: "Partial-update request body for a registered issuer. Fields omitted\
         \ from the body are left unchanged. `issuer`/`jwksUri`/`audience`/`contextId`\
         \ are trust-anchor / routing-pin fields: supplying a value that differs from\
@@ -10667,7 +11669,9 @@ components:
           example: 8
         failed:
           type: integer
-          description: The number of items that failed (status `conflict` or `invalid`).
+          description: "The number of items that failed (status `conflict`, `invalid`,\
+            \ `forbidden`, or `not_committed`). Together with `succeeded` this always\
+            \ accounts for every item you submitted."
           format: int32
           example: 2
       description: "The result of a batch write: a per-item outcome list plus counts\
@@ -10685,7 +11689,7 @@ components:
         id:
           type: string
           description: The id assigned to the written record. Present when this item
-            was created or updated; null when it failed (status `conflict` or `invalid`).
+            was created or updated; null on every failure status.
           nullable: true
           example: 550e8400-e29b-41d4-a716-446655440000
         externalId:
@@ -10696,15 +11700,23 @@ components:
           example: intake-2024-0042
         status:
           type: string
-          description: The outcome for this item. `created` and `updated` are successes;
-            `conflict` is a uniqueness or version conflict; `invalid` is a validation
-            failure.
+          description: "The outcome for this item. `created` (a new record was written)\
+            \ and `updated` (an existing record was matched — overwritten with `?upsert=true`,\
+            \ or returned unchanged) are successes. `conflict` is a uniqueness or\
+            \ version conflict; `invalid` is a validation failure; `forbidden` means\
+            \ your credential lacks the scope or ownership this item required, so\
+            \ the fix is to your credential rather than to the item; `not_committed`\
+            \ means this item itself was fine but an `all_or_nothing` batch was aborted\
+            \ by a different item, so nothing was written and resubmitting the batch\
+            \ with that item fixed will write this one unchanged."
           example: created
           enum:
           - created
           - updated
           - conflict
           - invalid
+          - forbidden
+          - not_committed
         error:
           $ref: "#/components/schemas/BatchItemError"
       description: "The outcome of a single item in a batch write. Use the `index`\
@@ -10715,22 +11727,34 @@ components:
       properties:
         atomicity:
           type: string
-          description: "Controls how the batch commits. `all_or_nothing` commits every\
-            \ item or none (transactional, but allows a smaller maximum batch size);\
-            \ `best_effort` commits each item independently and reports a per-item\
-            \ outcome. Defaults to `best_effort`."
+          description: "Controls how the batch commits. `best_effort` (the default,\
+            \ maximum 50 items) commits each item independently and reports a per-item\
+            \ outcome, so some items can succeed while others fail. `all_or_nothing`\
+            \ (maximum 50 items) commits every item in one transaction: if any item\
+            \ fails, no record is created or updated at all and the items that were\
+            \ themselves fine come back with status `not_committed`. Because that\
+            \ transaction is bounded by the number of underlying storage rows rather\
+            \ than by the number of records, a large `all_or_nothing` batch can still\
+            \ be refused as too big to commit atomically even when it is within the\
+            \ item limit — nothing is written when that happens. Any value other than\
+            \ these two is rejected rather than treated as the default, so a typo\
+            \ can never silently downgrade a transactional batch."
           example: best_effort
           enum:
           - all_or_nothing
           - best_effort
         items:
           type: array
-          description: The records to write. Each item has the same shape as the body
-            of a single create-record request (`POST /v1/records`).
+          description: "The records to write. Each item has the same shape as the\
+            \ body of a single create-record request (`POST /v1/records`), and goes\
+            \ through the same schema validation, `externalId` idempotency, unique-field\
+            \ enforcement and scope check — the `records:c:<type>` check being applied\
+            \ per item, against that item's own record type."
           items:
             $ref: "#/components/schemas/RecordRequest"
-      description: "Request body for writing multiple records in one call. Reserved\
-        \ for a future release: the endpoint currently returns HTTP 501 (Not Implemented)."
+      description: Request body for writing multiple records in one call. Each item
+        has the same shape as a single create-record request and is validated and
+        authorized independently.
     RecordRequest:
       type: object
       properties:
@@ -11109,6 +12133,17 @@ components:
             \ redacted in logs, audit trails, and errors; blind-indexed for lookups;\
             \ excluded from search; and masked in responses unless the token carries\
             \ the `s` reveal scope for this record type."
+          example: false
+        inline:
+          type: boolean
+          description: "Keep this field on the record row when the record's payload\
+            \ is stored out of line (large records, or a `LARGE_PAYLOAD` storage profile).\
+            \ An inline field appears in list and lookup projections without `includePayload`,\
+            \ and is the ONLY kind of field a trigger rule may project into its script's\
+            \ `input.record` — a rule's `fields` may name a field only if it is `inline`,\
+            \ `filterable`, or a lookup field, and not `sensitive`. Cannot be combined\
+            \ with `sensitive`. Removing it from a field a trigger rule still projects\
+            \ is refused."
           example: false
       description: "Defines a single field's type, validation, and indexing behavior."
     LookupDef:
@@ -11574,6 +12609,173 @@ components:
       description: "A page of record schemas as a `{data, nextCursor}` envelope. `nextCursor`\
         \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
         \ or null when no more pages remain."
+    Execution:
+      type: object
+      properties:
+        id:
+          type: string
+          description: The execution's correlation id — the same value stamped on
+            the request's log entry. Quote it to support.
+          example: 9f3c1e7b2a5d8460c1e9a7b4d20f8365e4a1c9d2b7f03a4e586c9e2f1d0a7b3c
+        durationMs:
+          type: integer
+          description: "Wall-clock milliseconds the execution took, as metered for\
+            \ billing — the same span reported under `execution` on `GET /v1/usage`."
+          format: int64
+          example: 412
+      description: Facts about the execution itself.
+    ScriptExecuteResponse:
+      required:
+      - execution
+      type: object
+      properties:
+        result:
+          description: "Whatever your script returned — any JSON value (object, array,\
+            \ string, number, boolean or null), converted the way `JSON.stringify`\
+            \ would convert it. The platform does not inspect or validate it and makes\
+            \ no promise about its shape; treat it as your own contract between your\
+            \ script and your client. Capped at 256 KB serialised (16 KB when the\
+            \ request carried an `Idempotency-Key`); a larger value is refused with\
+            \ `RESULT_TOO_LARGE` before anything is written — return ids rather than\
+            \ payloads."
+          nullable: true
+        execution:
+          $ref: "#/components/schemas/Execution"
+      description: The outcome of a synchronous script execution. Returned only after
+        the script's writes have committed — on any failure the body is the standard
+        error envelope and nothing the script staged is committed.
+    ScriptExecuteRequest:
+      required:
+      - scriptRef
+      type: object
+      properties:
+        scriptRef:
+          $ref: "#/components/schemas/ScriptRefRequest"
+        input:
+          type: object
+          additionalProperties: true
+          description: "A free-form JSON object your script receives as `input.params`.\
+            \ The platform does not validate or interpret it — a script that needs\
+            \ a shape checks for it and throws, which reaches you as a `400` carrying\
+            \ the script's own message. The script's `declaredInputContract` describes\
+            \ this object for readers; it is not enforced. Sized by the request body\
+            \ limit (256 KB for this endpoint). Omitting it is the same as `{}`."
+      description: "Runs a stored script synchronously under your own credential,\
+        \ inside one atomic write transaction, and returns what the script returned\
+        \ once its writes have committed."
+    ScriptRefRequest:
+      required:
+      - name
+      - version
+      type: object
+      properties:
+        name:
+          type: string
+          description: The referenceable script name (see POST /v1/scripts).
+          example: notify-assignee
+        version:
+          type: string
+          description: "A specific version number (as a decimal string), or the literal\
+            \ 'latest' to float to whichever version is newest when the rule fires\
+            \ or the request runs."
+          example: "3"
+      description: "A reference to a stored script by name and version — the script\
+        \ a trigger rule invokes, or the one `POST /v1/scripts/execute` runs."
+    ScriptResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: "Unique identifier for this script VERSION (each pushed version\
+            \ is its own id). Opaque — do not assume any particular format (it is\
+            \ deterministically derived, not a random UUID)."
+          example: 3b1c9f2e7a5d8410f6c2e9a1b7d4038f5e6a91c2d7f0b3a4586c9e2f1d0a7b3c
+        name:
+          type: string
+          description: The script's referenceable name — stable across versions.
+          example: notify-assignee
+        scriptVersion:
+          type: integer
+          description: "The auto-incrementing version number for this name, server-computed\
+            \ at push time. The first version pushed for a name is 1."
+          format: int32
+          example: 1
+        source:
+          type: string
+          description: The script's source text.
+          example: "export default function(input) { return { ok: true }; }"
+        declaredInputContract:
+          type: string
+          description: "Free-text description of the input shape this script expects,\
+            \ or null if not supplied."
+          example: "{ recordId: string, assigneeUserId: string }"
+        createdAt:
+          type: string
+          description: "When this script version was created, as an ISO-8601 UTC timestamp."
+          example: 2024-01-15T09:30:00Z
+        updatedAt:
+          type: string
+          description: "When this script version was last modified, as an ISO-8601\
+            \ UTC timestamp. Scripts are immutable per version, so this is always\
+            \ equal to createdAt."
+          example: 2024-01-15T09:30:00Z
+      description: "A script object — an opaque, versioned JS source blob. A version\
+        \ runs when a trigger rule references it or when `POST /v1/scripts/execute`\
+        \ names it; this response describes the stored version, not an execution."
+    ScriptRequest:
+      required:
+      - name
+      - source
+      type: object
+      properties:
+        name:
+          type: string
+          description: "The script's referenceable name/slug — stable across versions.\
+            \ Must be 1-64 characters of letters, digits, underscores ('_'), and hyphens\
+            \ ('-'). Required."
+          example: notify-assignee
+        source:
+          maxLength: 300000
+          type: string
+          description: "The script's source text, stored as-is: nothing parses or\
+            \ validates it at push time, so a syntax error surfaces as a `SCRIPT_ERROR`\
+            \ when the version first runs — from a trigger rule that references it,\
+            \ or from `POST /v1/scripts/execute`. Required, non-blank. Capped at 300,000\
+            \ UTF-8 bytes (~300 KB) — an oversized push is rejected with a 400."
+          example: "export default function(input) { return { ok: true }; }"
+        declaredInputContract:
+          maxLength: 50000
+          type: string
+          description: "Optional free-text description of the input shape this script\
+            \ expects. Not validated or enforced in this release. Capped at 50,000\
+            \ UTF-8 bytes (~50 KB) — an oversized value is rejected with a 400."
+          example: "{ recordId: string, assigneeUserId: string }"
+      description: Request body for pushing a new script object version. Scripts are
+        immutable per version — there is no update surface; push a new version with
+        another POST.
+    ScriptPage:
+      type: object
+      properties:
+        data:
+          type: array
+          description: "The items on this page, in the endpoint's natural order. Empty\
+            \ when there are no results."
+          items:
+            $ref: "#/components/schemas/ScriptResponse"
+        nextCursor:
+          type: string
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
+          nullable: true
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
+      description: "A page of script objects as a `{data, nextCursor}` envelope. `nextCursor`\
+        \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
+        \ or null when no more pages remain."
     SearchResponse:
       type: object
       properties:
@@ -11697,7 +12899,11 @@ components:
             \ it, such as its title, folder ID, and any custom fields you included."
         createdAt:
           type: string
-          description: "When the source item was created, as an ISO-8601 UTC timestamp."
+          description: "When this item was added to the search index, as an ISO-8601\
+            \ UTC timestamp. Usually the same moment the source item was created,\
+            \ but not always: if the item was re-indexed onto a new index entry at\
+            \ some later point, this reports that later time. Use the item's own `createdAt`\
+            \ from documents.get / records.get when you need the source creation time."
           example: 2024-01-15T09:30:00Z
       description: A single content chunk that matched the search query.
     SearchRequest:
@@ -11748,8 +12954,32 @@ components:
             \ then letters, digits, `_` or `-`) — for example `group:eng-team`, `org:<id>`,\
             \ or `client:<id>`. Scope values are attached to records and documents\
             \ at creation (the `scopes` field). Use `GET /v1/entities/{namespace}?externalId=`\
-            \ to look up an entity's ID from your own identifier."
+            \ to look up an entity's ID from your own identifier. Mutually exclusive\
+            \ with `scopeFilters` — use this for a single dimension, `scopeFilters`\
+            \ when you need to narrow by more than one."
           example: group:eng-team
+        scopeFilters:
+          type: array
+          description: "Restrict results to content matching ALL of these scope values\
+            \ (one per namespace), for a credential whose access spans more than one\
+            \ ownership dimension — for example `[\"org:<id>\", \"client:<id>\"]`\
+            \ to narrow to one specific client within one specific org. Each entry\
+            \ uses the same `namespace:value` form as `scope`. Naming the same namespace\
+            \ twice is rejected. Mutually exclusive with `scope` — use `scope` for\
+            \ a single dimension."
+          example:
+          - org:eng
+          - client:client-42
+          items:
+            type: string
+            description: "Restrict results to content matching ALL of these scope\
+              \ values (one per namespace), for a credential whose access spans more\
+              \ than one ownership dimension — for example `[\"org:<id>\", \"client:<id>\"\
+              ]` to narrow to one specific client within one specific org. Each entry\
+              \ uses the same `namespace:value` form as `scope`. Naming the same namespace\
+              \ twice is rejected. Mutually exclusive with `scope` — use `scope` for\
+              \ a single dimension."
+            example: "[\"org:eng\",\"client:client-42\"]"
         filters:
           type: object
           additionalProperties:
@@ -11768,7 +12998,7 @@ components:
             \ as ISO 8601 strings or epoch milliseconds. Unknown operators, non-scalar\
             \ operands, and malformed field names are rejected with a 400."
           example:
-            status: ACTIVE
+            category: hardware
             tag:
             - red
             - blue
@@ -11906,6 +13136,7 @@ components:
     MintTokenResponse:
       required:
       - expiresAt
+      - resolvedScope
       - token
       type: object
       properties:
@@ -11920,10 +13151,46 @@ components:
             \ the token's `exp` claim)."
           format: int64
           example: 1705312200
+        resolvedScope:
+          $ref: "#/components/schemas/ResolvedScope"
       description: "A minted scoped token and its absolute expiration. The token is\
         \ an opaque string for use in `Authorization: Bearer <token>` headers; `expiresAt`\
         \ mirrors the token's `exp` claim (seconds since the Unix epoch) so you can\
         \ decide when to refresh without decoding the token."
+    ResolvedScope:
+      type: object
+      properties:
+        allowedActions:
+          type: array
+          description: "The union of `allowed_actions` across every clause the token\
+            \ carries. `[\"*\"]` for a wildcard-scoped credential."
+          example:
+          - records:crud
+          - schemas:r
+          items:
+            type: string
+            description: "The union of `allowed_actions` across every clause the token\
+              \ carries. `[\"*\"]` for a wildcard-scoped credential."
+            example: "[\"records:crud\",\"schemas:r\"]"
+        identity:
+          type: object
+          additionalProperties:
+            type: string
+            description: "The token's `identity` claim — the ownership dimensions\
+              \ (canonical `scope:<namespace>` keys, plus `userId` when the token\
+              \ is bound to a specific user) this credential's own writes stamp by\
+              \ default. Empty for a credential with none (e.g. an unbound owner or\
+              \ service token)."
+            example: "{\"userId\":\"550e8400-e29b-41d4-a716-446655440000\"}"
+          description: "The token's `identity` claim — the ownership dimensions (canonical\
+            \ `scope:<namespace>` keys, plus `userId` when the token is bound to a\
+            \ specific user) this credential's own writes stamp by default. Empty\
+            \ for a credential with none (e.g. an unbound owner or service token)."
+          example:
+            userId: 550e8400-e29b-41d4-a716-446655440000
+      description: "The token's allowed actions and identity, resolved server-side\
+        \ from the same plaintext scope data baked into the token's own (compressed)\
+        \ `scope` claim. Read this instead of decoding the token client-side."
     ScopeRequest:
       type: object
       properties:
@@ -12200,16 +13467,16 @@ components:
         status:
           type: string
           description: "The user's lifecycle status. `ACTIVE` users can be used normally;\
-            \ `SUSPENDED` users are retained but blocked from new operations. `PENDING`\
-            \ is a server-managed state for invitations awaiting acceptance — you\
-            \ cannot set it directly. (A pending user becomes `ACTIVE` by sending\
-            \ status=ACTIVE together with `inviteToken`, `externalSubject`, and `emailVerifiedAttestation=true`.)\
-            \ You may set only `ACTIVE` or `SUSPENDED` directly."
+            \ `SUSPENDED` users are retained, and no new credentials can be issued\
+            \ for them — credentials they already hold keep working until they expire\
+            \ or are revoked. `PENDING` is a server-managed state for invitations\
+            \ awaiting acceptance and cannot be set on this endpoint: send only `ACTIVE`\
+            \ or `SUSPENDED`. (A pending user becomes `ACTIVE` by sending status=ACTIVE\
+            \ together with `inviteToken`, `externalSubject`, and `emailVerifiedAttestation=true`.)"
           example: ACTIVE
           enum:
           - ACTIVE
           - SUSPENDED
-          - PENDING
         type:
           type: string
           description: "The kind of user. `HUMAN` (the default) is a real person;\
@@ -12448,6 +13715,8 @@ components:
             lifetime — assuming a namespace value never resets or extends it.
           format: int32
           example: 900
+        resolvedScope:
+          $ref: "#/components/schemas/ResolvedScope"
       description: POST /v1/auth/token/assume success response.
     TokenExchangeResponse:
       type: object
@@ -12469,6 +13738,8 @@ components:
           description: Seconds until expiry.
           format: int32
           example: 3600
+        resolvedScope:
+          $ref: "#/components/schemas/ResolvedScope"
       description: RFC 8693 token-exchange success response.
     TokenExchangeRequest:
       required:
@@ -12526,6 +13797,415 @@ components:
             \ the two."
           example: default
       description: RFC 8693 token-exchange request.
+    TriggerFailurePage:
+      type: object
+      properties:
+        data:
+          type: array
+          description: "The items on this page, in the endpoint's natural order. Empty\
+            \ when there are no results."
+          items:
+            $ref: "#/components/schemas/TriggerFailureResponse"
+        nextCursor:
+          type: string
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
+          nullable: true
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
+      description: "A page of trigger execution failures as a `{data, nextCursor}`\
+        \ envelope. `nextCursor` is an opaque cursor — pass it back as `startFrom`\
+        \ to fetch the next page, or null when no more pages remain."
+    TriggerFailureResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: "Unique identifier for this failure record (deterministically\
+            \ derived from the firing, so every retry of the same firing updates one\
+            \ record rather than adding another — opaque, do not assume any particular\
+            \ format)."
+          example: 9f3c1e7b2a5d8460c1e9a7b4d20f8365e4a1c9d2b7f03a4e586c9e2f1d0a7b3c
+        ruleId:
+          type: string
+          description: The trigger rule whose execution failed.
+          example: 3b1c9f2e7a5d8410f6c2e9a1b7d4038f5e6a91c2d7f0b3a4586c9e2f1d0a7b3c
+        ruleName:
+          type: string
+          description: The rule's name at the time it failed.
+          example: on-intake-create
+        category:
+          type: string
+          description: "Why the execution failed, from a fixed set of categories.\
+            \ `RULE_DELETED`, `RULE_RETARGETED` and `TRIGGERS_DISABLED` never appear\
+            \ here — those are the correct outcome of your own edit, not a failure.\
+            \ The categories you can see are: `CASCADE_DEPTH_EXCEEDED`, `INPUT_TOO_LARGE`\
+            \ (the rule's projected `fields` exceeded the 224 KB input limit — narrow\
+            \ the declaration), `PRINCIPAL_UNRESOLVED`, `GRANT_UNRESOLVED`, `SCRIPT_NOT_FOUND`,\
+            \ `WRITE_FROZEN`, `RATE_LIMITED`, `CREDIT_LIMIT_EXCEEDED`, `PRINCIPAL_QUOTA_EXCEEDED`,\
+            \ `TENANT_CONCURRENCY_LIMIT`, `TIMEOUT`, `RESOURCE_LIMIT_EXCEEDED`, `WRITE_BUFFER_CAP_EXCEEDED`,\
+            \ `MANIFEST_VIOLATION`, `AUTHORIZATION_DENIED`, `CONCURRENT_MODIFICATION`,\
+            \ `SCRIPT_ERROR` and `INTERNAL_ERROR`."
+          example: SCRIPT_ERROR
+        retryable:
+          type: boolean
+          description: "Whether redelivering this firing could plausibly produce a\
+            \ different answer. When true, the platform retries automatically before\
+            \ giving up; when false, nothing changes until your script, your grant\
+            \ or your trigger topology does."
+          example: false
+        detail:
+          type: string
+          description: "A safe, human-readable explanation. Contains only your own\
+            \ content (a script's thrown message) or public API vocabulary (verb names,\
+            \ scope dimensions, and the ids of records, documents or folders) — never\
+            \ platform internals. Absent for `INTERNAL_ERROR`, which carries a `correlationId`\
+            \ instead."
+          example: Item rec_7f3a91 was modified by another writer while this execution
+            was committing. Re-read the affected items and re-apply the change.
+        correlationId:
+          type: string
+          description: "Present only for `INTERNAL_ERROR`. Quote it to support — it\
+            \ identifies this failure in the platform's own logs, where the full diagnosis\
+            \ lives. It is the same value as `id`."
+          example: 9f3c1e7b2a5d8460c1e9a7b4d20f8365e4a1c9d2b7f03a4e586c9e2f1d0a7b3c
+        attempts:
+          type: integer
+          description: "How many times this firing has been delivered and failed.\
+            \ The platform makes at most 3 attempts on a retryable failure, so 3 means\
+            \ it has given up."
+          format: int32
+          example: 1
+        schemaId:
+          type: string
+          description: The schema whose record change fired the rule.
+          example: sch_intake
+        event:
+          type: string
+          description: The record event that fired the rule.
+          example: CREATE
+          enum:
+          - CREATE
+          - UPDATE
+          - DELETE
+        recordId:
+          type: string
+          description: The record whose change fired the rule. The endpoint's own
+            description promises to tell you which of your records were involved;
+            this is that field.
+          example: rec_7f3a91
+        executionDepth:
+          type: integer
+          description: How deep in a chain of triggers this execution would have run.
+            1 means the firing record was written directly rather than by another
+            trigger.
+          format: int32
+          example: 1
+        durationMs:
+          type: integer
+          description: "How long this attempt ran, in milliseconds, before it failed.\
+            \ Absent when nothing ran (for example `CASCADE_DEPTH_EXCEEDED`, which\
+            \ is refused before the script starts). Covers only the most recent attempt\
+            \ — see `attempts` for how many there were."
+          format: int64
+          example: 1420
+        createdAt:
+          type: string
+          description: "When this firing first failed, as an ISO-8601 UTC timestamp."
+          example: 2024-01-15T09:30:00Z
+        updatedAt:
+          type: string
+          description: "When this record was last updated — the most recent failed\
+            \ attempt, as an ISO-8601 UTC timestamp."
+          example: 2024-01-15T09:31:12Z
+      description: "A trigger execution that failed. Rows appear only for firings\
+        \ that did not succeed, and are removed automatically if a later retry of\
+        \ the same firing succeeds — so this collection describes what is currently\
+        \ broken, not everything that ever hiccupped. Do not build a permanent audit\
+        \ on it: a record can disappear once the underlying problem is resolved, including\
+        \ after we recover a firing that had already been reported to you as failed.\
+        \ Entries also expire 30 days after the firing first failed."
+    FiringSourceRequest:
+      required:
+      - event
+      - schemaId
+      type: object
+      properties:
+        schemaId:
+          type: string
+          description: The platform-assigned schema id this rule watches.
+          example: sch_9f8e7d6c
+        event:
+          type: string
+          description: "Which record lifecycle event fires this rule. The script reads\
+            \ it as `input.event` (`CREATE`, `UPDATE` or `DELETE`), alongside `input.schemaId`,\
+            \ `input.recordId` (the id `vectros.records.get` accepts), `input.userId`\
+            \ and `input.scope.<namespace>` (the record's stamped ownership), `input.record`\
+            \ (the rule's declared `fields`, from the written row — or the deleted\
+            \ row on DELETE) and, on UPDATE only, `input.previous` (the same fields\
+            \ from the row before the write)."
+          example: CREATE
+      description: What fires the trigger.
+    TriggerRuleResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: "Unique identifier for this trigger rule (deterministically\
+            \ derived from tenant, context, and name — opaque, do not assume any particular\
+            \ format)."
+          example: 3b1c9f2e7a5d8410f6c2e9a1b7d4038f5e6a91c2d7f0b3a4586c9e2f1d0a7b3c
+        name:
+          type: string
+          description: The trigger's referenceable name.
+          example: on-intake-create
+        firingSource:
+          $ref: "#/components/schemas/FiringSourceRequest"
+        scriptRef:
+          $ref: "#/components/schemas/ScriptRefRequest"
+        roleIds:
+          type: array
+          description: "Role composition granted to this trigger's principal, or null\
+            \ when the grant is inline (see 'scopes')."
+          items:
+            type: string
+            description: "Role composition granted to this trigger's principal, or\
+              \ null when the grant is inline (see 'scopes')."
+        scopes:
+          type: array
+          description: "Inline scope clauses granted to this trigger's principal,\
+            \ or null when the grant is role-composed (see 'roleIds')."
+          items:
+            $ref: "#/components/schemas/ScopeClause"
+        manifest:
+          type: array
+          description: "The declared operation manifest, or null when no manifest\
+            \ was declared (the full grant applies). Enforced at execution: a verb\
+            \ outside the manifest is refused even when the grant would allow it."
+          items:
+            type: string
+            description: "The declared operation manifest, or null when no manifest\
+              \ was declared (the full grant applies). Enforced at execution: a verb\
+              \ outside the manifest is refused even when the grant would allow it."
+        fields:
+          type: array
+          description: "The record fields this rule projects into its script's `input.record`\
+            \ (and `input.previous` on UPDATE), in declared order. An empty list projects\
+            \ the record's identity only. Null only on a rule declared before this\
+            \ field existed, which projects nothing."
+          example:
+          - status
+          - assignee
+          items:
+            type: string
+            description: "The record fields this rule projects into its script's `input.record`\
+              \ (and `input.previous` on UPDATE), in declared order. An empty list\
+              \ projects the record's identity only. Null only on a rule declared\
+              \ before this field existed, which projects nothing."
+            example: "[\"status\",\"assignee\"]"
+        principalId:
+          type: string
+          description: "The TYPE_SERVICE principal id minted for this trigger, or\
+            \ null if not yet set."
+          example: usr_1a2b3c4d
+        provisionedBy:
+          type: string
+          description: "The name of the blueprint that provisions this trigger, or\
+            \ null for a trigger you manage yourself. `vectros bootstrap --blueprint`\
+            \ deletes only the triggers carrying its own blueprint's name, so a trigger\
+            \ belonging to another blueprint — or created directly through this API\
+            \ — is never removed by someone else's apply."
+          example: casework
+        created:
+          type: boolean
+          description: true if this request created a new trigger rule (HTTP 201);
+            false if it returned or reconciled an existing one (HTTP 200).
+        createdAt:
+          type: string
+          description: "When this trigger rule was first created, as an ISO-8601 UTC\
+            \ timestamp."
+          example: 2024-01-15T09:30:00Z
+        updatedAt:
+          type: string
+          description: "When this trigger rule was last modified, as an ISO-8601 UTC\
+            \ timestamp."
+          example: 2024-01-15T09:30:00Z
+      description: A declared trigger rule. A record write on the named schema runs
+        the referenced script asynchronously under this rule's own grant.
+    TriggerRuleRequest:
+      required:
+      - firingSource
+      - name
+      - scriptRef
+      type: object
+      properties:
+        name:
+          type: string
+          description: "Your own identifier for the trigger rule, unique within your\
+            \ app context. Must be 1-64 characters of letters, digits, underscores\
+            \ ('_'), and hyphens ('-'). Immutable once created; ignored on update."
+          example: on-intake-create
+        firingSource:
+          $ref: "#/components/schemas/FiringSourceRequest"
+        scriptRef:
+          $ref: "#/components/schemas/ScriptRefRequest"
+        roleIds:
+          type: array
+          description: "Role composition — the trigger's principal is granted each\
+            \ named role's clauses, concatenated in the order listed. Mutually exclusive\
+            \ with 'scopes'; provide exactly one."
+          example:
+          - case-worker
+          items:
+            type: string
+            description: "Role composition — the trigger's principal is granted each\
+              \ named role's clauses, concatenated in the order listed. Mutually exclusive\
+              \ with 'scopes'; provide exactly one."
+            example: "[\"case-worker\"]"
+        scopes:
+          type: array
+          description: Inline scope clauses granted to this trigger's principal —
+            the same shape a role's own clause list carries. Mutually exclusive with
+            'roleIds'; provide exactly one.
+          items:
+            $ref: "#/components/schemas/ScopeClause"
+        manifest:
+          type: array
+          description: "Optional operation manifest: the host-object verbs this trigger's\
+            \ script may call (e.g. 'records.update'), narrowing its grant further\
+            \ for this usage only. ENFORCED at execution: a verb outside the manifest\
+            \ is refused even when the grant would allow it. An entry names one of\
+            \ the three host-object namespaces and one of its verbs — 'records.<verb>'\
+            \ and 'documents.<verb>' each offer create/get/update/delete/query/lookup,\
+            \ and 'folders.<verb>' offers create/get/update/delete/query (folders\
+            \ have no lookup). An unrecognized entry is rejected with a 400 listing\
+            \ the recognized set. On CREATE, omitting this field (or sending an empty\
+            \ list) means no manifest (the full grant applies). On UPDATE (PUT), omitting\
+            \ this field leaves the trigger's EXISTING manifest unchanged — it does\
+            \ NOT clear it; send an explicit empty list ([]) to remove a manifest\
+            \ restriction and return to the full grant."
+          example:
+          - records.get
+          - documents.create
+          - folders.create
+          items:
+            type: string
+            description: "Optional operation manifest: the host-object verbs this\
+              \ trigger's script may call (e.g. 'records.update'), narrowing its grant\
+              \ further for this usage only. ENFORCED at execution: a verb outside\
+              \ the manifest is refused even when the grant would allow it. An entry\
+              \ names one of the three host-object namespaces and one of its verbs\
+              \ — 'records.<verb>' and 'documents.<verb>' each offer create/get/update/delete/query/lookup,\
+              \ and 'folders.<verb>' offers create/get/update/delete/query (folders\
+              \ have no lookup). An unrecognized entry is rejected with a 400 listing\
+              \ the recognized set. On CREATE, omitting this field (or sending an\
+              \ empty list) means no manifest (the full grant applies). On UPDATE\
+              \ (PUT), omitting this field leaves the trigger's EXISTING manifest\
+              \ unchanged — it does NOT clear it; send an explicit empty list ([])\
+              \ to remove a manifest restriction and return to the full grant."
+            example: "[\"records.get\",\"documents.create\",\"folders.create\"]"
+        fields:
+          type: array
+          description: "REQUIRED on create: the record fields this rule projects into\
+            \ its script's `input.record` — and, on an UPDATE firing, `input.previous`\
+            \ (the same fields from the row before the write). On a DELETE firing\
+            \ `input.record` carries these fields from the deleted row, which is the\
+            \ only way a script can see anything of it. Send an empty list to project\
+            \ nothing beyond the record's identity (`input.recordId`). Every entry\
+            \ must name a field the schema keeps INLINE — declared `inline: true`,\
+            \ `filterable`, or as a lookup field — and not `sensitive`; anything else\
+            \ is rejected with a 400 listing the projectable fields, and a schema\
+            \ update that would un-inline a field a rule still projects is refused.\
+            \ A field the record does not carry is simply absent (`undefined`), never\
+            \ null. Together, `record` and `previous` are limited to 224 KB serialised;\
+            \ a firing whose projected input exceeds that is not run and is recorded\
+            \ as an `INPUT_TOO_LARGE` failure naming the size. A rule that declares\
+            \ fields must be able to READ every record it fires on: its grant must\
+            \ hold a records:r clause covering the schema's type (a grant with no\
+            \ read at all is rejected), and that clause may not carry a literal data_scope\
+            \ constraint (a `${{ input.userId }}` / `${{ input.scope.<namespace>}}`\
+            \ placeholder is fine — it is the firing record's own value), or the rule\
+            \ is rejected with a 400; and if at execution the rule's grant cannot\
+            \ read the firing record, `record` and `previous` are delivered as empty\
+            \ objects. On UPDATE (PUT), omitting this field leaves the trigger's existing\
+            \ declaration unchanged."
+          example:
+          - status
+          - assignee
+          items:
+            type: string
+            description: "REQUIRED on create: the record fields this rule projects\
+              \ into its script's `input.record` — and, on an UPDATE firing, `input.previous`\
+              \ (the same fields from the row before the write). On a DELETE firing\
+              \ `input.record` carries these fields from the deleted row, which is\
+              \ the only way a script can see anything of it. Send an empty list to\
+              \ project nothing beyond the record's identity (`input.recordId`). Every\
+              \ entry must name a field the schema keeps INLINE — declared `inline:\
+              \ true`, `filterable`, or as a lookup field — and not `sensitive`; anything\
+              \ else is rejected with a 400 listing the projectable fields, and a\
+              \ schema update that would un-inline a field a rule still projects is\
+              \ refused. A field the record does not carry is simply absent (`undefined`),\
+              \ never null. Together, `record` and `previous` are limited to 224 KB\
+              \ serialised; a firing whose projected input exceeds that is not run\
+              \ and is recorded as an `INPUT_TOO_LARGE` failure naming the size. A\
+              \ rule that declares fields must be able to READ every record it fires\
+              \ on: its grant must hold a records:r clause covering the schema's type\
+              \ (a grant with no read at all is rejected), and that clause may not\
+              \ carry a literal data_scope constraint (a `${{ input.userId }}` / `${{\
+              \ input.scope.<namespace>}}` placeholder is fine — it is the firing\
+              \ record's own value), or the rule is rejected with a 400; and if at\
+              \ execution the rule's grant cannot read the firing record, `record`\
+              \ and `previous` are delivered as empty objects. On UPDATE (PUT), omitting\
+              \ this field leaves the trigger's existing declaration unchanged."
+            example: "[\"status\",\"assignee\"]"
+        principalId:
+          type: string
+          description: "The TYPE_SERVICE principal id minted for this trigger (set\
+            \ by the CLI loader at blueprint-apply time; not partner-authored directly\
+            \ in the normal flow, but accepted here so the loader can set it explicitly)."
+          example: usr_1a2b3c4d
+        provisionedBy:
+          type: string
+          description: "The name of the blueprint that provisions this trigger. Set\
+            \ by `vectros bootstrap --blueprint` so that a later apply of the SAME\
+            \ blueprint can safely delete a trigger you have removed from it, and\
+            \ so that a trigger belonging to another blueprint — or hand-authored\
+            \ through this API — is never deleted by someone else's apply. Leave it\
+            \ unset for a trigger you manage yourself. Immutable once set: to move\
+            \ a trigger between blueprints, delete it and re-create it."
+          example: casework
+      description: "Request body for declaring or reconciling a trigger rule. Once\
+        \ declared, the rule fires: a record write on the named schema runs the referenced\
+        \ script asynchronously under this rule's own grant, with `input.record` carrying\
+        \ the fields the rule declares in `fields`. A scoped credential may not declare\
+        \ a grant exceeding its own."
+    TriggerRulePage:
+      type: object
+      properties:
+        data:
+          type: array
+          description: "The items on this page, in the endpoint's natural order. Empty\
+            \ when there are no results."
+          items:
+            $ref: "#/components/schemas/TriggerRuleResponse"
+        nextCursor:
+          type: string
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
+          nullable: true
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
+      description: "A page of trigger rules as a `{data, nextCursor}` envelope. `nextCursor`\
+        \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
+        \ or null when no more pages remain."
     ChatStreamEvent:
       type: object
       description: A single Server-Sent Event from `POST /v1/chat`. The `type` field
@@ -13035,8 +14715,30 @@ components:
           description: "Restrict retrieval to content carrying this scope value, in\
             \ `namespace:value` form — for example `group:eng-team`, `org:<id>`, or\
             \ `client:<id>`. Resolve an entity's UUID from your own identifier via\
-            \ `GET /v1/entities/{namespace}?externalId=`."
+            \ `GET /v1/entities/{namespace}?externalId=`. Mutually exclusive with\
+            \ `scopeFilters` — use this for a single dimension, `scopeFilters` when\
+            \ you need to narrow by more than one."
           example: group:eng-team
+        scopeFilters:
+          type: array
+          description: "Restrict retrieval to content matching ALL of these scope\
+            \ values (one per namespace), for a credential whose access spans more\
+            \ than one ownership dimension — for example `[\"org:<id>\", \"client:<id>\"\
+            ]` to narrow to one specific client within one specific org. Each entry\
+            \ uses the same `namespace:value` form as `scope`. Naming the same namespace\
+            \ twice is rejected. Mutually exclusive with `scope`."
+          example:
+          - org:eng
+          - client:client-42
+          items:
+            type: string
+            description: "Restrict retrieval to content matching ALL of these scope\
+              \ values (one per namespace), for a credential whose access spans more\
+              \ than one ownership dimension — for example `[\"org:<id>\", \"client:<id>\"\
+              ]` to narrow to one specific client within one specific org. Each entry\
+              \ uses the same `namespace:value` form as `scope`. Naming the same namespace\
+              \ twice is rejected. Mutually exclusive with `scope`."
+            example: "[\"org:eng\",\"client:client-42\"]"
         contentTypes:
           type: array
           description: "Narrow retrieval to specific content types. When omitted,\

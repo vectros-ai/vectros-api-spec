@@ -164,7 +164,13 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
    - Register webhooks to receive `document.indexed`, `document.failed`,
      `record.indexed`, `record.failed` events. The envelope's `data` carries
      `userId` and `scopes` when present — the same ownership spelling as REST — and,
-     on the `.failed` events, the `indexFailure` object described above.
+     on the indexing `.failed` events, the `indexFailure` object described above.
+   - Register `trigger.failed` to learn when an async trigger execution failed
+     terminally — the platform has stopped retrying it. It fires once per problem,
+     not once per attempt, and a transient failure that succeeds on retry sends
+     nothing. The same records are queryable at `GET /v1/trigger-failures`, which
+     also clears a record when a later retry succeeds, so treat that endpoint as
+     "what is broken now" rather than as a permanent history.
    - Webhook payloads are signed with HMAC-SHA256. Verify the
      `X-Vectros-Signature` header (`sha256=<hex>`), computed over the literal
      string `<X-Vectros-Timestamp>.<body>` keyed by the hex-decoded secret.
@@ -179,11 +185,19 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      when more results exist past this page. `totalResults` is an approximate
      matching-pool size, not a reliable paging signal; use `hasMore` instead.
    - A context-confined credential's `GET /v1/usage` sections (`credits`, `search`,
-     `documents`, `records`, `identity`, `inference`, `readAccess`, `tenants`) narrow to
-     that context alone — a root key or a cross-context credential still sees full-account
-     totals. Two exceptions: `reads.calls.used`/`reads.dataOut.bytes` read `0` for a
-     context-confined credential (metered per account, no per-context breakdown exists),
-     and `credits.limit` always reflects your whole plan.
+     `documents`, `records`, `identity`, `inference`, `readAccess`, `execution`,
+     `tenants`) narrow to that context alone — a root key or a cross-context credential
+     still sees full-account totals. Two exceptions: `reads.calls.used`/`reads.dataOut.bytes`
+     read `0` for a context-confined credential (metered per account, no per-context
+     breakdown exists), and `credits.limit` always reflects your whole plan.
+   - `execution` reports trigger-script execution time and the surcharge it incurred
+     (`executions`, `totalMillis`, `includedMillis`, `billableMillis`, `credits`,
+     `creditsMilli`), with a matching `credits.breakdown.scriptExecution` category.
+     `billableMillis` is `totalMillis`, plus a fixed per-execution baseline, less
+     `includedMillis` — the execution time the executions' own billable operations
+     included. Sub-credit remainders carry forward across the account for the period, so
+     compare `execution.creditsMilli` against your account-wide figure rather than
+     recomputing it from one context's `billableMillis`.
 
 9. **Named platform capabilities (`granted_capabilities`):**
    - A scope clause (in a role, an access profile, or an invitation) accepts
