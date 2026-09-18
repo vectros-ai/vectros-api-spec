@@ -84,7 +84,9 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 2. **The File Upload Handshake (CRITICAL — never skip this):**
    - Files are NOT sent as multipart/form-data to the API.
    - Step 1: `POST /v1/documents/upload` with filename and indexMode → get `uploadUrl`
-   - Step 2: HTTP PUT the raw file bytes directly to `uploadUrl`
+   - Step 2: HTTP PUT the raw file bytes directly to `uploadUrl`. If the response carries
+     `requiredHeaderName`, send that header with the exact `requiredHeaderValue` on the PUT:
+     it is part of the URL's signature, and a PUT without it is rejected with `403`.
    - The system indexes automatically after the PUT completes.
 
 3. **Hybrid Search (BM25 + Vector — RRF fusion):**
@@ -204,14 +206,22 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      an optional `granted_capabilities` array alongside `allowed_actions` and
      `data_scope`. A capability grants a bounded, cross-context effect the
      `resource:ops` verb grammar cannot express on its own.
-   - Four names are recognized in this release. `member-lifecycle`: create and
+   - Six names are recognized in this release. `member-lifecycle`: create and
      remove identities in app contexts the credential can already reach.
      `forensic-read`: read the access log across every context in the tenant
      (adds to, does not replace, the `access-log:r` action). `context-directory-read`:
      read the tenant's app-context directory (contexts, roles, access
      profiles) and a principal's cross-context membership, across every
      context. `delegate-mint`: mint a scoped key (`POST /v1/admin/keys/scoped`)
-     bound to a principal other than the caller.
+     bound to a principal other than the caller. `delegate-principal-stamp`:
+     let a trigger rule's `principalId` name a principal other than the
+     caller (0.44.0; the same authority `POST /v1/records` and every other
+     create-path ownership stamp already requires to stamp a `userId` other
+     than your own). `trigger-control-plane-grant`: let a trigger rule's grant
+     name a control-plane resource (`keys`, `profiles`, `users`,
+     `app-contexts`, `access-log`, `scripts`, any op) or the bare wildcard `*`
+     (0.44.0 — a trigger's grant executes unattended on every matching write,
+     for as long as the rule exists).
    - The list is closed and versioned with the API. An absent or empty array
      grants nothing (silence, not a wildcard). An unrecognized name denies the
      WHOLE clause, including its `allowed_actions`, rather than being dropped.

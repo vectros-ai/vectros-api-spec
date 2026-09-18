@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.43.0"
+  version: "0.44.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -251,12 +251,12 @@ paths:
             \ or you named a `userId` other than your own principal without holding\
             \ the `delegate-mint` capability."
         "404":
-          description: "The context does not exist, or no access profile exists for\
-            \ the named user in the named context. This is a single, uniform response:\
-            \ a user id that does not exist anywhere in your account and a user id\
-            \ that exists but has no profile in this context return the identical\
-            \ message (naming the access profile) — match on that message, not on\
-            \ whether the user itself was found."
+          description: "The context does not exist or is being deleted, or no access\
+            \ profile exists for the named user in the named context. This is a single,\
+            \ uniform response: a user id that does not exist anywhere in your account\
+            \ and a user id that exists but has no profile in this context return\
+            \ the identical message (naming the access profile) — match on that message,\
+            \ not on whether the user itself was found."
         "409":
           description: "Something the request references is suspended, so no key is\
             \ minted. TWO distinct causes, with different remedies — read the message,\
@@ -270,9 +270,10 @@ paths:
             \ neither revokes anything**, and the two axes differ in what happens\
             \ to credentials you have already handed out. Suspending the PROFILE also\
             \ stops existing credentials bound to it, within about five minutes. Suspending\
-            \ the USER does NOT: their existing keys keep working indefinitely, because\
-            \ a user's status is not consulted when a credential authenticates — revoke\
-            \ those keys explicitly if that is what you need. Deliberately not a `403`\
+            \ — or deleting — the USER stops existing keys bound to their profiles\
+            \ on the same bound, because the bound user's row is also checked when\
+            \ a credential's access profile is resolved — its existence and tenant\
+            \ for a deletion, its status for a suspension. Deliberately not a `403`\
             \ — nothing is wrong with your credential."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
@@ -396,9 +397,11 @@ paths:
         description: "Filter by resource type. One of `documents`, `records`, `search`,\
           \ `schemas`, `folders`, `entities`, `namespaces`, `users`, `usage`, `auth`,\
           \ `models`, `ping`, `issuers`, `rag`, `chat`, `ask`, `erasure-requests`,\
-          \ or `export`. `clients` and `orgs` are not accepted — `/v1/orgs` and `/v1/clients`\
-          \ were retired onto `/v1/entities/{namespace}` and no log row was ever written\
-          \ under those resource names."
+          \ `export`, `scripts`, or `triggers`. `clients` and `orgs` are not accepted\
+          \ — `/v1/orgs` and `/v1/clients` were retired onto `/v1/entities/{namespace}`\
+          \ and no log row was ever written under those resource names. `trigger-failures`\
+          \ is also not accepted: `GET /v1/trigger-failures` rows are logged under\
+          \ `triggers`, not a separate resource name."
         schema:
           type: string
         example: documents
@@ -568,7 +571,8 @@ paths:
             \ principalId, so a credential that cannot list your users cannot use\
             \ this endpoint to discover which user ids exist."
         "404":
-          description: No app context exists with this contextId.
+          description: "No app context exists with this contextId, or it is being\
+            \ deleted."
         "403":
           description: Not authorized.
         "429":
@@ -794,7 +798,8 @@ paths:
         "400":
           description: The roleId format is invalid or the scopes payload is malformed.
         "404":
-          description: No app context exists with this contextId.
+          description: "No app context exists with this contextId, or it is being\
+            \ deleted."
         "403":
           description: Not authorized.
         "429":
@@ -943,8 +948,11 @@ paths:
         "204":
           description: Access profile deleted.
         "404":
-          description: No access profile exists with this principalId in the given
-            context.
+          description: "No access profile exists with this principalId in the given\
+            \ context, or the context is being deleted."
+        "409":
+          description: The access profile kept changing while it was being deleted
+            (`errorCode` `VERSION_CONFLICT`). Nothing was deleted; retry the request.
         "403":
           description: Not authorized.
         "429":
@@ -998,11 +1006,16 @@ paths:
       tags:
       - Auth
       summary: Update an app context
-      description: "Updates the name, description, and/or companyName of an app context.\
-        \ This is a partial update: any field you omit (or send as null) keeps its\
-        \ existing value. The `contextId` is immutable and is taken from the URL path,\
-        \ so any `contextId` in the request body is ignored. Requires the `app-contexts:u`\
-        \ scope."
+      description: "Updates an app context. This is a partial update: any field you\
+        \ omit (or send as null) keeps its existing value. The `contextId` is immutable\
+        \ and is taken from the URL path, so any `contextId` in the request body is\
+        \ ignored. Patchable fields: `name`, `description`, `companyName`; the per-principal\
+        \ metering trio (`meteringAxis`, `principalBurstLimit`, `principalUsageCap`\
+        \ — only takes effect for a partner with the corresponding account-level feature\
+        \ enabled); `readAccessLogDefault` (the PHI read-access-logging context default);\
+        \ and `identityProjectionClaims` (requires the platform provisioning capability\
+        \ on top of the ordinary scope below — see its own field description). Requires\
+        \ the `app-contexts:u` scope."
       operationId: updateAppContext
       parameters:
       - name: contextId
@@ -1049,16 +1062,16 @@ paths:
       - Auth
       summary: Delete an app context
       description: "Permanently deletes an app context and everything in it — every\
-        \ record, document, folder, schema, role, and access profile belonging to\
-        \ the context. This is irreversible. The deletion runs asynchronously: the\
-        \ call returns 202 immediately and the context's data drains in the background.\
-        \ Poll the context's `status` field to observe when the teardown completes\
-        \ (`purging` while draining, then `deleted`). To guard against accidental\
-        \ deletion, you must echo the contextId back in the `confirm` query parameter\
-        \ (`?confirm={contextId}`). The reserved `default` and `vectros-admin` contexts\
-        \ cannot be deleted. This operation requires a root API key (one beginning\
-        \ with `sk_`): no scoped credential, not even one with full wildcard (`*`)\
-        \ scope, can trigger this teardown."
+        \ record, document, folder, schema, role, access profile, and trusted-issuer\
+        \ registration belonging to the context. This is irreversible. The deletion\
+        \ runs asynchronously: the call returns 202 immediately and the context's\
+        \ data drains in the background. Poll the context's `status` field to observe\
+        \ when the teardown completes (`purging` while draining, then `deleted`).\
+        \ To guard against accidental deletion, you must echo the contextId back in\
+        \ the `confirm` query parameter (`?confirm={contextId}`). The reserved `default`\
+        \ and `vectros-admin` contexts cannot be deleted. This operation requires\
+        \ a root API key (one beginning with `sk_`): no scoped credential, not even\
+        \ one with full wildcard (`*`) scope, can trigger this teardown."
       operationId: deleteAppContext
       parameters:
       - name: contextId
@@ -1169,7 +1182,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/RoleResponse"
         "404":
-          description: No role exists with this roleId in the given context.
+          description: "No role exists with this roleId in the given context, or the\
+            \ context is being deleted."
         "403":
           description: Not authorized.
         "429":
@@ -1212,7 +1226,8 @@ paths:
         "204":
           description: Role deleted.
         "404":
-          description: No role exists with this roleId in the given context.
+          description: "No role exists with this roleId in the given context, or the\
+            \ context is being deleted."
         "403":
           description: Not authorized.
         "429":
@@ -2061,17 +2076,38 @@ paths:
         \ S3 PUT URL. Upload the file bytes directly to `uploadUrl`; the document\
         \ is then automatically queued for text extraction and asynchronous indexing.\
         \ Supplying an `externalId` makes this idempotent — re-initiating an upload\
-        \ with the same `externalId` re-issues a fresh presigned URL to the SAME existing\
-        \ document/object (so a re-upload inherently replaces the file body) rather\
-        \ than creating a duplicate. The response's `created` field (and the HTTP\
-        \ status — 201 when a new document was minted, 200 when an existing one was\
-        \ matched) tells the two apart. With `?upsert=true`, the submitted `payload`/`title`\
-        \ are also applied to the matched document (file-body divergence cannot be\
-        \ diffed at upload-init — the bytes have not arrived yet — so the re-upload\
-        \ itself replaces the body). Creating a NEW document requires the `documents:c`\
-        \ scope. Re-uploading over an EXISTING document overwrites (and re-indexes)\
-        \ its body, so it is an update: it requires the `documents:u` scope (as does\
-        \ `?upsert=true` for the metadata)."
+        \ with the same `externalId` re-issues a fresh presigned URL for the SAME\
+        \ existing document, targeting a newly-staged object rather than the document's\
+        \ current one — your PUT lands there first, and the document only adopts it\
+        \ once the upload is validated (so a re-upload inherently replaces the file\
+        \ body) rather than creating a duplicate. The response's `created` field (and\
+        \ the HTTP status — 201 when a new document was minted, 200 when an existing\
+        \ one was matched) tells the two apart. With `?upsert=true`, the submitted\
+        \ `payload`/`title` are also applied to the matched document (file-body divergence\
+        \ cannot be diffed at upload-init — the bytes have not arrived yet — so the\
+        \ re-upload itself replaces the body). Creating a NEW document requires the\
+        \ `documents:c` scope. Re-uploading over an EXISTING document overwrites (and\
+        \ re-indexes) its body, so it is an update: it requires the `documents:u`\
+        \ scope (as does `?upsert=true` for the metadata). **Your PUT to `uploadUrl`\
+        \ MUST include the header named in the response's `requiredHeaderName`, set\
+        \ to `requiredHeaderValue` exactly.** It is a signed part of the presigned\
+        \ request — the PUT never reaches this service either way, so neither failure\
+        \ uses this API's JSON error shape. Omitting it, or sending a different value,\
+        \ invalidates the request's signature and S3 rejects it with a 403 `SignatureDoesNotMatch`.\
+        \ Sending it correctly makes the URL single-use: `requiredHeaderName` is always\
+        \ `If-None-Match` and `requiredHeaderValue` is always `*` — a create, a recovery\
+        \ upload for a document whose earlier file is missing, and a re-upload ALL\
+        \ target a freshly-minted, never-written key, so the same S3 conditional-write\
+        \ precondition applies uniformly (S3's own documented conditional-write behavior):\
+        \ a replay after the object already exists (from your own completed PUT, or\
+        \ anyone else's) fails with `412 Precondition Failed`; a replay after the\
+        \ object was deleted and never re-created finds an absent key again and can\
+        \ succeed — single-use is a property of the object's existence, not a one-time\
+        \ token. **Either precondition can also fail with `409 Conflict` if your PUT\
+        \ genuinely races a concurrent delete on the same object.** Whichever of `412`\
+        \ or `409` you receive, the remedy is the same: call this endpoint again for\
+        \ a fresh URL rather than retrying the same PUT — a fresh call always targets\
+        \ a new key, so it is never subject to whatever raced the previous one."
       operationId: uploadDocument
       parameters:
       - name: upsert
@@ -2100,8 +2136,9 @@ paths:
                 $ref: "#/components/schemas/FileUploadResponse"
         "200":
           description: "A document with the same `externalId` already existed (`created:\
-            \ false`); a fresh presigned URL to its existing object was re-issued\
-            \ (idempotent upload)."
+            \ false`); a fresh presigned upload URL was issued for it (idempotent\
+            \ upload); the upload targets a new object, which the document adopts\
+            \ once the upload is validated."
           content:
             application/json:
               schema:
@@ -3230,18 +3267,27 @@ paths:
       - Auth
       summary: Update a registered issuer's safe fields
       description: "Updates the mutable fields of a registered issuer: `subClaim`,\
-        \ `emailClaim`, `status` (`active`/`suspended` — a suspended issuer's tokens\
-        \ are rejected identically to an unregistered issuer at exchange time), and\
-        \ `selfSignupPolicies`. Fields omitted from the body are left unchanged (partial\
-        \ update). `issuer`, `jwksUri`, `audience`, and `contextId` are trust-anchor\
+        \ `emailClaim`, `userinfoUri`, `capturedClaims`, `restrictedToDomain` (a new\
+        \ non-blank value must already be a VERIFIED domain for your account; an empty\
+        \ string clears it back to domain-less; see `IssuerUpdateRequest.restrictedToDomain`\
+        \ for the full semantics), `status` (`active`/`suspended` — a suspended issuer's\
+        \ tokens are rejected identically to an unregistered issuer at exchange time),\
+        \ and `selfSignupPolicies`. Fields omitted from the body are left unchanged\
+        \ (partial update). `issuer`, `jwksUri`, `audience`, and `contextId` are trust-anchor\
         \ / routing-pin fields and are immutable via this route — supplying a value\
         \ that differs from the current registration is rejected with 400; supplying\
         \ the current value back is a no-op. Rotating a trust anchor requires deleting\
         \ and re-registering the issuer, which is itself refused while any user is\
-        \ bound through it. Requires a root API key or the bootstrap's provisioning\
-        \ capability, gated identically to every other operation on this surface.\
-        \ A credential confined to one app context may only update an issuer registered\
-        \ in that context; naming one registered in another context returns 404, identically\
+        \ bound through it. **`subClaim` is identity-determining, not merely cosmetic**:\
+        \ it names which verified JWT claim is read as the federated user's identifier,\
+        \ so changing it on an issuer that already has bound users would silently\
+        \ re-identify (or, under self-signup, orphan) every one of them — changing\
+        \ it is therefore refused once any user has bound through this issuer, the\
+        \ same guard `DELETE` already applies, and is only free before the first real\
+        \ login. Requires a root API key or the bootstrap's provisioning capability,\
+        \ gated identically to every other operation on this surface. A credential\
+        \ confined to one app context may only update an issuer registered in that\
+        \ context; naming one registered in another context returns 404, identically\
         \ to a nonexistent issuerId. A root API key may update any issuer."
       operationId: updateIssuer
       parameters:
@@ -3267,8 +3313,9 @@ paths:
                 $ref: "#/components/schemas/IssuerResponse"
         "400":
           description: "Malformed request, an unrecognized `status` value, a `selfSignupPolicies`\
-            \ entry targeting an elevated role, or a trust-anchor / `contextId` field\
-            \ supplied with a value that differs from the current registration."
+            \ entry targeting an elevated role, a `subClaim` change requested on an\
+            \ issuer that already has bound users, or a trust-anchor / `contextId`\
+            \ field supplied with a value that differs from the current registration."
         "403":
           description: Root API key or provisioning capability required.
         "404":
@@ -3301,10 +3348,22 @@ paths:
         \ issuerId. A root API key may deregister any issuer. Refused if any user\
         \ account was ever created or matched via this issuer (by a prior self-signup\
         \ or accepted invite, through `POST /v1/auth/token/exchange`) — that access\
-        \ cannot be silently orphaned. Deactivate the affected users first if you\
-        \ intend to cut off their access, or register a replacement issuer before\
-        \ removing this one. An issuer that has never been used for an exchange (no\
-        \ bound users yet) can always be deregistered."
+        \ cannot be silently orphaned. This is unconditional on the affected users'\
+        \ `status`: suspending them first does not lift the refusal. **A bound registration\
+        \ cannot be replaced, self-service, within its own app context**: registering\
+        \ a replacement issuer under a different issuerId in the SAME context also\
+        \ fails, because the context's one-active-issuer claim is released only when\
+        \ THIS registration is deleted. Two real options: suspend this issuer (stops\
+        \ new exchanges immediately) and register a replacement under a DIFFERENT\
+        \ app context — note that targets a different context, so this context's existing\
+        \ users/roles/access profiles are not carried over; or contact your platform\
+        \ operator, who can force-release this registration so a replacement may be\
+        \ registered in the SAME context under a new issuerId. **The operator path\
+        \ is not a lighter-weight alternative to the first — it PERMANENTLY RETIRES\
+        \ this issuerId and leaves every bound user unable to ever exchange through\
+        \ it again; it does not preserve continuity for them any better than registering\
+        \ under a different context does.** An issuer that has never been used for\
+        \ an exchange (no bound users yet) can always be deregistered."
       operationId: deleteIssuer
       parameters:
       - name: issuerId
@@ -3322,9 +3381,10 @@ paths:
         "404":
           description: No issuer with this issuerId is registered in your tenant.
         "409":
-          description: "At least one user was created or matched via this issuer —\
-            \ deregistering it is refused. Deactivate affected users first, or register\
-            \ a replacement issuer."
+          description: At least one user was created or matched via this issuer —
+            deregistering it is refused regardless of the affected users' status.
+            A same-context replacement cannot be self-served; see this operation's
+            description for the real recovery options.
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -3400,7 +3460,11 @@ paths:
         \ fails with 400 rather than returning that context's configuration. An app\
         \ context may have at most one active issuer — deregister the existing one\
         \ first if you need to replace it. One issuer MAY serve several contexts today,\
-        \ each via its own registration row with a distinct `audience`."
+        \ each via its own registration row with a distinct `audience`. Optionally\
+        \ name `restrictedToDomain` to scope this registration's (issuer, audience)\
+        \ uniqueness to a specific VERIFIED domain rather than the bare pair — see\
+        \ that field's own description for the full contract, including why it does\
+        \ NOT protect a shared/consumer-IdP registration with no company-domain population."
       operationId: registerIssuer
       requestBody:
         content:
@@ -3425,9 +3489,14 @@ paths:
                 $ref: "#/components/schemas/IssuerResponse"
         "400":
           description: "Malformed request, invalid issuerId/contextId format, unknown\
-            \ contextId, the (issuer, audience) pair is already registered, the named\
-            \ contextId already has a different active issuer, or issuerId collides\
-            \ with a registration owned by a different app context you do not administer."
+            \ contextId, the (issuer, audience) pair is already registered (at the\
+            \ same restrictedToDomain scope, if named), restrictedToDomain names a\
+            \ domain that is not a VERIFIED domain for your account, the named contextId\
+            \ already has a different active issuer, issuerId collides with a registration\
+            \ owned by a different app context you do not administer, your tenant\
+            \ has reached its limit on registered issuers, or this issuerId was permanently\
+            \ retired — either an operator released a bound registration held under\
+            \ it, or its app context was deleted while it had bound users."
         "403":
           description: "Root API key or provisioning capability required, or the provisioning\
             \ capability you hold is bound to a different app context than the one\
@@ -4613,7 +4682,11 @@ paths:
       summary: Get the tombstone for a deleted record
       description: "Returns the tombstone left behind when a record was hard-deleted,\
         \ confirming the deletion and recording when it happened. Look it up using\
-        \ the deleted record's original ID. Requires the `records:r:<type>` scope."
+        \ the deleted record's original ID. Requires the `records:r:<type>` scope,\
+        \ granted without a `data_scope` restriction: the owner of a deleted record\
+        \ cannot be checked, so a credential confined to an ownership compartment\
+        \ (e.g. `data_scope: {scope:org: [org_A]}`) cannot read tombstones, including\
+        \ for records it owned."
       operationId: getRecordTombstone
       parameters:
       - name: id
@@ -4627,10 +4700,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RecordResponse"
+                $ref: "#/components/schemas/TombstoneResponse"
         "404":
           description: "No tombstone with this ID exists in your account (the record\
-            \ was never deleted, never existed, or is outside your scope)."
+            \ was never deleted, never existed, is outside your token's context, is\
+            \ outside your token's per-type scope, or your token's grant for its type\
+            \ carries a `data_scope` restriction)."
       security:
         - BearerAuth: []
   /v1/records/{id}/versions:
@@ -4996,11 +5071,13 @@ paths:
       summary: Delete a record schema
       description: "Permanently deletes a record schema. The request is refused with\
         \ 409 if records of this type still exist — delete those records first, since\
-        \ every record must reference a live schema. A lineage base (a schema other\
-        \ schemas declare `basedOn`) also cannot be deleted while any such variant\
-        \ still exists — delete the variant schema(s) first. It is likewise refused\
-        \ while any trigger rule fires off this schema — delete those trigger rules\
-        \ first. Requires the `schemas:d` scope."
+        \ every record must reference a live schema. The same applies to documents\
+        \ bound to this schema (for a schema declaring the `document` surface) — delete\
+        \ those documents first. A lineage base (a schema other schemas declare `basedOn`)\
+        \ also cannot be deleted while any such variant still exists — delete the\
+        \ variant schema(s) first. It is likewise refused while any trigger rule fires\
+        \ off this schema — delete those trigger rules first. Requires the `schemas:d`\
+        \ scope."
       operationId: deleteSchema
       parameters:
       - name: id
@@ -5020,7 +5097,8 @@ paths:
           description: No schema with this id exists in your account.
         "409":
           description: "The schema is still in use by existing records of its type,\
-            \ or (for a lineage base) by an existing basedOn variant."
+            \ by documents bound to it, or (for a lineage base) by an existing basedOn\
+            \ variant."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5185,13 +5263,20 @@ paths:
         \ every version of one script name (oldest first); omit it for a flat list\
         \ across every name in your account (newest first). Results are returned as\
         \ a `{data, nextCursor}` envelope — pass `nextCursor` as `startFrom` to fetch\
-        \ the next page. Requires the `scripts:r` scope."
+        \ the next page. Requires the `scripts:r` scope. **Each row's `source` is\
+        \ omitted by default** (`sourceOmitted: true`) — scripts are immutable per\
+        \ version, so a name's version history can otherwise carry every version's\
+        \ complete source in one response. Pass `?includeSource=true` to get it back\
+        \ inline, or fetch one version's full source with a by-id GET. **`?name=<n>&latest=true`**\
+        \ answers \"what is the current version of this name\" in one bounded call\
+        \ — a single `ScriptResponse` object (not a page), instead of draining every\
+        \ page of the name's version history to find the newest yourself."
       operationId: listScripts
       parameters:
       - name: name
         in: query
         description: "List every version of this script name (oldest first), instead\
-          \ of a flat cross-name list."
+          \ of a flat cross-name list. Required when `latest=true`."
         schema:
           type: string
         example: notify-assignee
@@ -5199,14 +5284,14 @@ paths:
         in: query
         description: Pagination cursor. Pass the `nextCursor` returned by the previous
           page to fetch the next page; omit it for the first page. The cursor is **opaque**
-          — echo it back unchanged.
+          — echo it back unchanged. Ignored when `latest=true`.
         schema:
           type: string
         example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
       - name: limit
         in: query
         description: Maximum number of scripts to return per page. Must be between
-          1 and 100; defaults to 20.
+          1 and 100; defaults to 20. Ignored when `latest=true`.
         schema:
           maximum: 100
           minimum: 1
@@ -5214,14 +5299,43 @@ paths:
           format: int64
           default: 20
         example: 20
+      - name: includeSource
+        in: query
+        description: Include each row's full `source` inline instead of the default
+          omitted projection. Costs the same per-row weight a by-id GET pays; at `limit=100`
+          on large scripts this can approach the response-payload ceiling (the reason
+          the default changed). Defaults to false.
+        schema:
+          type: boolean
+        example: false
+      - name: latest
+        in: query
+        description: "Instead of a page, return a single `ScriptResponse`: the current\
+          \ newest version of `name` (required alongside this). One bounded read (`GET`-by-id-equivalent\
+          \ cost) instead of draining every page of the name's version history to\
+          \ compute the max version yourself. Defaults to false."
+        schema:
+          type: boolean
+        example: false
       responses:
         "200":
-          description: "A page of script versions, returned as a `{data, nextCursor}`\
-            \ envelope. `nextCursor` is null when there are no more pages."
+          description: "Either a page of script versions (the `{data, nextCursor}`\
+            \ envelope; `nextCursor` is null when there are no more pages, and each\
+            \ row omits `source` unless `?includeSource=true` was passed), or — when\
+            \ `?latest=true` was passed alongside `name` — a single script version\
+            \ object, the newest of that name. Distinguish the two by shape: the page\
+            \ envelope has a top-level `data` array, the single-object form does not."
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ScriptPage"
+                oneOf:
+                - $ref: "#/components/schemas/ScriptPage"
+                - $ref: "#/components/schemas/ScriptResponse"
+        "400":
+          description: '`?latest=true` was passed without `name`.'
+        "404":
+          description: '`?latest=true` was passed and no version of `name` exists
+            in your account.'
       security:
         - BearerAuth: []
     post:
@@ -5233,8 +5347,18 @@ paths:
         \ always creates a new row with `scriptVersion` auto-incremented (the first\
         \ version pushed for a name is 1). `source` is stored as-is: nothing parses\
         \ or validates it at push time. A version runs when a trigger rule references\
-        \ it (`POST /v1/triggers`) or when `POST /v1/scripts/execute` names it. Requires\
-        \ the `scripts:c` scope."
+        \ it (`POST /v1/triggers`) or when `POST /v1/scripts/execute` names it. `provisionedBy`\
+        \ MAY BE SET ON ABSENT, NEVER CHANGED, evaluated against the CURRENT LATEST\
+        \ version of this `name` at push time: if the latest version has no marker\
+        \ recorded, this push may set any value; if the latest version already has\
+        \ one, an omitted value inherits it forward and a DIFFERENT value is refused\
+        \ — a live comparison against whichever version is newest at push time, not\
+        \ a value fixed for the name's whole history. Pushing onto an EXISTING name\
+        \ with no `provisionedBy` recorded on its current latest version additionally\
+        \ requires that you were the caller who pushed that latest version — a name\
+        \ carrying a `provisionedBy` marker is exempt from this check (proving you\
+        \ can supply or inherit the matching marker is itself the ownership proof\
+        \ there). Requires the `scripts:c` scope."
       operationId: createScript
       requestBody:
         content:
@@ -5251,10 +5375,14 @@ paths:
                 $ref: "#/components/schemas/ScriptResponse"
         "400":
           description: "The request was invalid — for example, `name` was missing\
-            \ or malformed, or `source` was blank."
+            \ or malformed, `source` was blank, or `provisionedBy` supplies a value\
+            \ different from the one already recorded on this name's current latest\
+            \ version."
         "403":
-          description: Your API key or token lacks the `scripts:c` scope required
-            to push a script.
+          description: "Your API key or token lacks the `scripts:c` scope required\
+            \ to push a script, or you are pushing onto an existing name whose current\
+            \ latest version has no `provisionedBy` marker and was pushed by a different\
+            \ caller."
         "409":
           description: "Another request pushed a new version of this script name at\
             \ the same moment as this one. List `GET /v1/scripts?name=<name>` to find\
@@ -5346,9 +5474,11 @@ paths:
       tags:
       - Scripts
       summary: Delete a script version
-      description: Permanently deletes one script version by ID. Deleting one version
-        does not affect any other version of the same name. Requires the `scripts:d`
-        scope.
+      description: "Permanently deletes one script version by ID. Deleting one version\
+        \ does not affect any other version of the same name. Requires the `scripts:d`\
+        \ scope. Refused with 409 if a live trigger rule still references this version\
+        \ — either directly (a pinned `scriptRef`), or via `\"latest\"` when this\
+        \ IS the newest version of its name. Delete or re-point those rules first."
       operationId: deleteScript
       parameters:
       - name: id
@@ -5361,6 +5491,10 @@ paths:
           description: The script version was deleted. No response body is returned.
         "404":
           description: No script with the given ID exists in your account.
+        "409":
+          description: "A live trigger rule still references this script version —\
+            \ directly by a pinned `scriptRef`, or (when this is the newest version\
+            \ of its name) via `\"latest\"`. Delete or re-point those rules first."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5480,8 +5614,8 @@ paths:
         "403":
           description: Only a root API key can mint scoped tokens.
         "404":
-          description: The `contextId` you supplied does not name an existing app
-            context in your account.
+          description: "The `contextId` you supplied does not name an existing app\
+            \ context in your account, or names one that is being deleted."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5642,11 +5776,12 @@ paths:
         description: "When `true`, if a user with the same `externalId` already exists\
           \ its mutable fields (email, status, payload, schemaId) are updated to the\
           \ submitted values instead of being returned unchanged; the immutable `externalId`\
-          \ and `type` are never changed, and `email` cannot be changed while an invitation\
-          \ to that user is still outstanding. Defaults to `false`. Requires the `users:u`\
-          \ scope in addition to `users:c`. A context-confined credential attempting\
-          \ to overwrite a user outside its own app context receives the uniform `400`\
-          \ (\"already exists\") rather than the overwrite."
+          \ and `type` are never changed, `email` cannot be changed while an invitation\
+          \ to that user is still outstanding, and a user whose invitation has not\
+          \ been accepted cannot be set to `ACTIVE`. Defaults to `false`. Requires\
+          \ the `users:u` scope in addition to `users:c`. A context-confined credential\
+          \ attempting to overwrite a user outside its own app context receives the\
+          \ uniform `400` (\"already exists\") rather than the overwrite."
         schema:
           type: boolean
           default: false
@@ -5676,12 +5811,13 @@ paths:
                 $ref: "#/components/schemas/UserResponse"
         "400":
           description: "The request body failed validation (for example, `externalId`\
-            \ is missing or the payload does not match the bound schema); or a user\
-            \ with the same `externalId` already exists but your credential can't\
-            \ be shown it — reported as an \"already exists\" error instead of the\
-            \ user, whether because your credential lacks the `users:r` scope or because\
-            \ it is context-confined and the existing user holds no access profile\
-            \ in your credential's own app context."
+            \ is missing or the payload does not match the bound schema, or `?upsert=true`\
+            \ would set a user whose invitation has not been accepted to `ACTIVE`);\
+            \ or a user with the same `externalId` already exists but your credential\
+            \ can't be shown it — reported as an \"already exists\" error instead\
+            \ of the user, whether because your credential lacks the `users:r` scope\
+            \ or because it is context-confined and the existing user holds no access\
+            \ profile in your credential's own app context."
         "403":
           description: "Your API key or token lacks the `users:c` scope required to\
             \ create a user (or, with `?upsert=true`, the `users:u` scope required\
@@ -5783,8 +5919,11 @@ paths:
         "400":
           description: "Validation error: an immutable field was changed; `email`\
             \ was changed while an invitation to that user is still outstanding; `status`\
-            \ was set to a value other than `ACTIVE` or `SUSPENDED`; or `status` was\
-            \ set to `PENDING`, which is server-managed and cannot be set here — including\
+            \ was set to `ACTIVE` on a user whose invitation has not been accepted,\
+            \ without completing the invitation (this includes a user who was invited\
+            \ and then suspended — delete and re-invite such a user); `status` was\
+            \ set to a value other than `ACTIVE` or `SUSPENDED`; or `status` was set\
+            \ to `PENDING`, which is server-managed and cannot be set here — including\
             \ by echoing a pending user's own status back in a read-modify-write,\
             \ so omit `status` from the body when updating a pending user's other\
             \ fields."
@@ -5841,7 +5980,11 @@ paths:
           description: "Either: this is your account's last OWNER (an account must\
             \ always retain at least one owner; contact support if you need to change\
             \ who holds it), or the calling credential is context-confined and the\
-            \ user holds access in an app context other than its own."
+            \ user holds access in an app context other than its own, or the user\
+            \ or its access profile changed while it was being deleted (`errorCode`\
+            \ `VERSION_CONFLICT`; the user was not deleted — retry the request. For\
+            \ a context-confined credential, the user's access profile in that credential's\
+            \ own app context may already have been removed)."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5966,10 +6109,13 @@ paths:
       tags:
       - Identity
       summary: Get a user's version history
-      description: "Returns the audit trail of changes to a user, most recent first.\
-        \ Identity history is always recorded and always available. Sensitive field\
-        \ values are redacted in every historical version. Returns a page in the `{data,\
-        \ nextCursor}` envelope. Requires the `users:r` scope."
+      description: "Returns the audit trail of changes to a user, most recent first,\
+        \ including after the user has been deleted. Identity history is always recorded.\
+        \ Post-delete, this is readable by an account-level (root) API key only —\
+        \ a context-confined credential 404s after the delete, the same response it\
+        \ would get for a nonexistent id. Sensitive field values are redacted in every\
+        \ historical version. Returns a page in the `{data, nextCursor}` envelope.\
+        \ Requires the `users:r` scope."
       operationId: getUserVersions
       parameters:
       - name: id
@@ -5993,9 +6139,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ModelDataVersionPage"
         "404":
-          description: No user with the given ID exists in your account. A context-confined
-            credential also sees this when the user exists but holds no access profile
-            in the credential's own app context — indistinguishable from not existing.
+          description: "No user with the given ID exists in your account. This is\
+            \ also returned when the user exists (or existed) but the caller cannot\
+            \ reach it: a context-confined credential with no access profile for this\
+            \ user in its own app context, or any context-confined credential reading\
+            \ a DELETED user's history — indistinguishable from not existing."
       security:
         - BearerAuth: []
   /v1/users/invite:
@@ -6075,7 +6223,8 @@ paths:
             \ capability plus the matching `profiles:<verb>` grant), or is bound to\
             \ a different app context."
         "404":
-          description: The referenced app context does not exist in your account.
+          description: "The referenced app context does not exist in your account,\
+            \ or is being deleted."
         "409":
           description: "Email already in use IN THIS APP CONTEXT: an active or suspended\
             \ member of this context already has it, or an outstanding invitation\
@@ -6149,7 +6298,8 @@ paths:
             \ (or the `member-lifecycle` capability plus the matching `profiles:<verb>`\
             \ grant)."
         "404":
-          description: No pending invitation matches the supplied email and app context.
+          description: "No pending invitation matches the supplied email and app context,\
+            \ or the app context does not exist or is being deleted."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -6251,8 +6401,8 @@ paths:
         "403":
           description: "The presented bearer is `sk_*`/`ssk_*` (rejected outright),\
             \ it was itself produced by `/assume`, it has been revoked, it is bound\
-            \ to no principal or app context, or no single role's `assumable` field\
-            \ grants the requested value(s)."
+            \ to no principal or app context, its app context is being deleted, or\
+            \ no single role's `assumable` field grants the requested value(s)."
         "409":
           description: "Your credential's basis changed: the access profile or a role\
             \ it was minted from has since been edited, suspended or deleted. Re-authenticate\
@@ -6335,7 +6485,10 @@ paths:
         "403":
           description: "subject_token verified, but its subject resolves to no existing\
             \ Vectros user, matches no pending invite, and either no self-signup policy\
-            \ is configured or signup_type matched none of the configured ones."
+            \ is configured or signup_type matched none of the configured ones; or\
+            \ the matched user has no active access profile in the issuer's app context;\
+            \ or that app context no longer exists or is being deleted. The body is\
+            \ deliberately uniform."
         "404":
           description: The iss/aud pair names no registered issuer.
         "429":
@@ -6522,8 +6675,13 @@ paths:
             \ entry the schema does not keep inline."
         "403":
           description: "Your API key or token lacks the `triggers:c` scope required\
-            \ to declare a trigger, or the requested grant exceeds your own granted\
-            \ scope."
+            \ to declare a trigger, the requested grant exceeds your own granted scope,\
+            \ `principalId` names a principal other than yourself and your credential\
+            \ lacks the `delegate-principal-stamp` capability, or the grant carries\
+            \ a control-plane verb (`keys`, `profiles`, `users`, `app-contexts`, `access-log`,\
+            \ or `scripts`) — including the bare wildcard `*`, which grants every\
+            \ resource — and your credential lacks the `trigger-control-plane-grant`\
+            \ capability."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -6600,10 +6758,24 @@ paths:
           description: "The request was invalid — including an attempt to change an\
             \ immutable field, a `roleIds` entry that does not resolve in this context,\
             \ or a `fields` entry the (possibly re-targeted) schema does not keep\
-            \ inline."
+            \ inline. `principalId` specifically is immutable once set REGARDLESS\
+            \ of the `delegate-principal-stamp` capability — that capability only\
+            \ ever admits setting it from absent (see the 403 case above); a request\
+            \ to change an already-set `principalId` gets this 400 whether or not\
+            \ the capability is held."
         "403":
-          description: "Your API key or token lacks the `triggers:u` scope, or the\
-            \ rule's resulting grant exceeds your own granted scope."
+          description: "Your API key or token lacks the `triggers:u` scope, the rule's\
+            \ resulting grant exceeds your own granted scope, the update would SET\
+            \ `principalId` to a principal other than yourself (including onto a rule\
+            \ that previously had none) and your credential lacks the `delegate-principal-stamp`\
+            \ capability, or the resulting grant carries a control-plane verb (`keys`,\
+            \ `profiles`, `users`, `app-contexts`, `access-log`, or `scripts`) — including\
+            \ the bare wildcard `*`, which grants every resource — and your credential\
+            \ lacks the `trigger-control-plane-grant` capability. The check evaluates\
+            \ the resulting (merged) grant on every update — even one that changes\
+            \ nothing about `scopes`/`roleIds` — so a control-plane verb or `*` anywhere\
+            \ in that resulting grant is refused regardless of what the request actually\
+            \ changed."
         "404":
           description: No trigger rule with the given ID exists in your account.
         "429":
@@ -6949,15 +7121,16 @@ components:
           type: string
           description: The app context the read occurred in (the data-partition axis).
           example: ctx_intake
-        subjectType:
-          type: string
-          description: "The kind of subject whose PHI was read: `user`, or an ownership\
-            \ namespace such as `org` or `client`."
-          example: user
-        subjectId:
-          type: string
-          description: Identifier of the data subject whose PHI was read.
-          example: user_abc123
+        subjects:
+          type: array
+          description: "Every subject whose PHI this read disclosed — the ownership\
+            \ dimensions the accessed row carried at the moment of disclosure. A record\
+            \ owned by a user AND an organisation AND a team is ONE disclosure with\
+            \ THREE subjects, and is returned by a query on any of them. Empty only\
+            \ when the accessed row carried no ownership at all, in which case the\
+            \ read is accounted at tenant level."
+          items:
+            $ref: "#/components/schemas/ReadAccessSubject"
         callerKeyId:
           type: string
           description: The credential (API key / scoped token key id) that performed
@@ -7015,6 +7188,20 @@ components:
       description: "A single PHI read-access (accounting-of-disclosures) row: who\
         \ read which subject's data, when, and against which record. Metadata only\
         \ — never the PHI itself. Returned by `GET /v1/admin/access-log`."
+    ReadAccessSubject:
+      type: object
+      properties:
+        type:
+          type: string
+          description: "The kind of subject: `user` (the principal), or an ownership\
+            \ namespace such as the built-in `org` and `client`, or one you registered\
+            \ such as `team`. A subject kind is your data, not a fixed list."
+          example: user
+        id:
+          type: string
+          description: Identifier of the data subject.
+          example: user_abc123
+      description: One ownership dimension of a disclosed row.
     ScopedKeyResponse:
       type: object
       properties:
@@ -7265,13 +7452,19 @@ components:
         errorCode:
           type: string
           description: "Error code explaining WHY a failed call was rejected, when\
-            \ the failure had a typed code — one of `RATE_LIMITED`, `SUBSCRIPTION_LIMIT_EXCEEDED`,\
-            \ `INSUFFICIENT_BALANCE`, `RESOURCE_IN_USE`, `VERSION_CONFLICT`, `SESSION_REFRESH_REQUIRED`,\
-            \ `WRITE_FROZEN`, `UNSUPPORTED_WIRE_VERSION`. Null for successful calls,\
-            \ for failures that carry only a message, and for calls recorded before\
-            \ this release that are still within your log retention window. Request\
-            \ and response bodies are never logged, so no further detail is available\
-            \ here by design."
+            \ the failure had a typed code — an uppercase token such as `RATE_LIMITED`,\
+            \ `SCRIPT_ERROR` or `VERSION_CONFLICT`. **This set is open and grows as\
+            \ the platform gains new typed failures, so treat these as examples rather\
+            \ than an exhaustive list**: branch on the specific codes your integration\
+            \ handles and fall back to generic handling for anything else, rather\
+            \ than matching against a fixed set. The codes a given call can return\
+            \ are documented on that endpoint's own error responses; a script execution\
+            \ additionally reports the name of its failure category, the same vocabulary\
+            \ `GET /v1/trigger-failures` returns in `category`. Null for successful\
+            \ calls, for failures that carry only a message, and for calls recorded\
+            \ before this release that are still within your log retention window.\
+            \ Request and response bodies are never logged, so no further detail is\
+            \ available here by design."
           nullable: true
           example: RATE_LIMITED
         delegationChain:
@@ -7533,7 +7726,7 @@ components:
           type: array
           description: "Named platform capabilities this clause grants — bounded effects\
             \ that reach across a partition boundary, which allowed_actions cannot\
-            \ express. \n\nFive names are accepted in this release. \n\n'member-lifecycle'\
+            \ express. \n\nSix names are accepted in this release. \n\n'member-lifecycle'\
             \ — create and remove identities in your tenant. Adding someone who already\
             \ has an identity here resolves them by email or externalId as part of\
             \ that operation; it does not let the credential look an identity up on\
@@ -7604,45 +7797,66 @@ components:
             \ on behalf of known users. Unlike the three capabilities above, it is\
             \ NOT refused when a self-signup policy creates a profile — a context\
             \ founder can hold it immediately so they can onboard teammates from the\
-            \ moment their context exists. \n\nThe list is CLOSED and versioned with\
-            \ the API: a later release may accept further names, and a name this release\
-            \ does not accept is rejected when you author the clause. Three rules,\
-            \ all fail-closed: an ABSENT or empty list grants NO capability (absence\
-            \ is silence, not a wildcard); an UNRECOGNIZED name denies this whole\
-            \ clause rather than being ignored, so a typo fails loudly at the first\
-            \ request instead of silently downgrading the grant; and a '*' in allowed_actions\
-            \ confers ZERO capabilities — '*' is not a wildcard here and is rejected\
-            \ as a name. Each capability's reach is fixed by its own definition, stated\
-            \ above; the clause carries NAMES ONLY. Where a capability acts on individual\
-            \ records this clause's data_scope narrows it too, but the name in this\
-            \ release is not per-record — 'member-lifecycle' is bounded by the app\
-            \ contexts the credential can reach, so data_scope does not narrow it."
+            \ moment their context exists. \n\n'trigger-control-plane-grant' — let\
+            \ a trigger rule's own grant (its 'scopes', or a composed role) carry\
+            \ a control-plane verb: any operation on 'keys', 'profiles', 'users',\
+            \ 'app-contexts', or 'access-log', or any operation on 'scripts' — or\
+            \ the bare wildcard '*', which grants every resource. Without it, POST/PUT\
+            \ /v1/triggers rejects a grant naming one of those resources or '*', even\
+            \ when you already hold the verb yourself — a trigger's grant executes\
+            \ UNATTENDED, on every matching record write, for as long as the rule\
+            \ exists, which is a materially different exposure than a human exercising\
+            \ the same scope once. This capability does not by itself admit any value:\
+            \ the same clause (or composed role) still has to be something you are\
+            \ separately authorized to declare — ordinary grant-subset checking still\
+            \ applies, so you cannot use this capability to grant a trigger authority\
+            \ you do not hold. It is tenant-wide by design, for the same reason as\
+            \ 'forensic-read'/'delegate-mint' — grant it deliberately, to an operator\
+            \ or automation role that provisions durable, control-plane-capable automation\
+            \ on purpose, not by default. It is refused when a self-signup policy\
+            \ creates a profile, so no NEW self-signup can be created against a role\
+            \ that holds it; that check runs at that moment rather than continuously,\
+            \ so adding it to a role your users can already sign up to grants it to\
+            \ those existing members at their next token. \n\nThe list is CLOSED and\
+            \ versioned with the API: a later release may accept further names, and\
+            \ a name this release does not accept is rejected when you author the\
+            \ clause. Three rules, all fail-closed: an ABSENT or empty list grants\
+            \ NO capability (absence is silence, not a wildcard); an UNRECOGNIZED\
+            \ name denies this whole clause rather than being ignored, so a typo fails\
+            \ loudly at the first request instead of silently downgrading the grant;\
+            \ and a '*' in allowed_actions confers ZERO capabilities — '*' is not\
+            \ a wildcard here and is rejected as a name. Each capability's reach is\
+            \ fixed by its own definition, stated above; the clause carries NAMES\
+            \ ONLY. Where a capability acts on individual records this clause's data_scope\
+            \ narrows it too, but the name in this release is not per-record — 'member-lifecycle'\
+            \ is bounded by the app contexts the credential can reach, so data_scope\
+            \ does not narrow it."
           example:
           - member-lifecycle
           items:
             type: string
             description: "Named platform capabilities this clause grants — bounded\
               \ effects that reach across a partition boundary, which allowed_actions\
-              \ cannot express. \n\nFive names are accepted in this release. \n\n\
-              'member-lifecycle' — create and remove identities in your tenant. Adding\
-              \ someone who already has an identity here resolves them by email or\
-              \ externalId as part of that operation; it does not let the credential\
-              \ look an identity up on its own. Grant it deliberately: its reach is\
-              \ any app context the credential can already administer, which is an\
-              \ ordinary grant where contexts separate your APPS — but not where you\
-              \ have modelled your own customers as separate app contexts. \n\n'forensic-read'\
-              \ — read the access log across every context in your tenant, by the\
-              \ credential that performed each read ('what did key K read'). It confers\
-              \ nothing on its own: the endpoint still requires the 'access-log:r'\
-              \ action, and this capability only lifts the app-context confinement\
-              \ on the by-credential query — so the effective grant is 'access-log:r'\
-              \ PLUS this name. It is tenant-wide by design and is not narrowed by\
-              \ the credential's own app context, so grant it only to an audit or\
-              \ support role. It is refused when a self-signup policy creates a profile,\
-              \ so no NEW self-signup can be created against a role that holds it;\
-              \ note that this is checked at that moment rather than continuously,\
-              \ so adding it to a role your users can already sign up to grants it\
-              \ to those existing members at their next token. \n\n'context-directory-read'\
+              \ cannot express. \n\nSix names are accepted in this release. \n\n'member-lifecycle'\
+              \ — create and remove identities in your tenant. Adding someone who\
+              \ already has an identity here resolves them by email or externalId\
+              \ as part of that operation; it does not let the credential look an\
+              \ identity up on its own. Grant it deliberately: its reach is any app\
+              \ context the credential can already administer, which is an ordinary\
+              \ grant where contexts separate your APPS — but not where you have modelled\
+              \ your own customers as separate app contexts. \n\n'forensic-read' —\
+              \ read the access log across every context in your tenant, by the credential\
+              \ that performed each read ('what did key K read'). It confers nothing\
+              \ on its own: the endpoint still requires the 'access-log:r' action,\
+              \ and this capability only lifts the app-context confinement on the\
+              \ by-credential query — so the effective grant is 'access-log:r' PLUS\
+              \ this name. It is tenant-wide by design and is not narrowed by the\
+              \ credential's own app context, so grant it only to an audit or support\
+              \ role. It is refused when a self-signup policy creates a profile, so\
+              \ no NEW self-signup can be created against a role that holds it; note\
+              \ that this is checked at that moment rather than continuously, so adding\
+              \ it to a role your users can already sign up to grants it to those\
+              \ existing members at their next token. \n\n'context-directory-read'\
               \ — read your tenant's app-context DIRECTORY (which app contexts exist,\
               \ their roles and access profiles, and which contexts a given principal\
               \ is in) across every context, not just the credential's own. It confers\
@@ -7696,17 +7910,37 @@ components:
               \ on behalf of known users. Unlike the three capabilities above, it\
               \ is NOT refused when a self-signup policy creates a profile — a context\
               \ founder can hold it immediately so they can onboard teammates from\
-              \ the moment their context exists. \n\nThe list is CLOSED and versioned\
-              \ with the API: a later release may accept further names, and a name\
-              \ this release does not accept is rejected when you author the clause.\
-              \ Three rules, all fail-closed: an ABSENT or empty list grants NO capability\
-              \ (absence is silence, not a wildcard); an UNRECOGNIZED name denies\
-              \ this whole clause rather than being ignored, so a typo fails loudly\
-              \ at the first request instead of silently downgrading the grant; and\
-              \ a '*' in allowed_actions confers ZERO capabilities — '*' is not a\
-              \ wildcard here and is rejected as a name. Each capability's reach is\
-              \ fixed by its own definition, stated above; the clause carries NAMES\
-              \ ONLY. Where a capability acts on individual records this clause's\
+              \ the moment their context exists. \n\n'trigger-control-plane-grant'\
+              \ — let a trigger rule's own grant (its 'scopes', or a composed role)\
+              \ carry a control-plane verb: any operation on 'keys', 'profiles', 'users',\
+              \ 'app-contexts', or 'access-log', or any operation on 'scripts' — or\
+              \ the bare wildcard '*', which grants every resource. Without it, POST/PUT\
+              \ /v1/triggers rejects a grant naming one of those resources or '*',\
+              \ even when you already hold the verb yourself — a trigger's grant executes\
+              \ UNATTENDED, on every matching record write, for as long as the rule\
+              \ exists, which is a materially different exposure than a human exercising\
+              \ the same scope once. This capability does not by itself admit any\
+              \ value: the same clause (or composed role) still has to be something\
+              \ you are separately authorized to declare — ordinary grant-subset checking\
+              \ still applies, so you cannot use this capability to grant a trigger\
+              \ authority you do not hold. It is tenant-wide by design, for the same\
+              \ reason as 'forensic-read'/'delegate-mint' — grant it deliberately,\
+              \ to an operator or automation role that provisions durable, control-plane-capable\
+              \ automation on purpose, not by default. It is refused when a self-signup\
+              \ policy creates a profile, so no NEW self-signup can be created against\
+              \ a role that holds it; that check runs at that moment rather than continuously,\
+              \ so adding it to a role your users can already sign up to grants it\
+              \ to those existing members at their next token. \n\nThe list is CLOSED\
+              \ and versioned with the API: a later release may accept further names,\
+              \ and a name this release does not accept is rejected when you author\
+              \ the clause. Three rules, all fail-closed: an ABSENT or empty list\
+              \ grants NO capability (absence is silence, not a wildcard); an UNRECOGNIZED\
+              \ name denies this whole clause rather than being ignored, so a typo\
+              \ fails loudly at the first request instead of silently downgrading\
+              \ the grant; and a '*' in allowed_actions confers ZERO capabilities\
+              \ — '*' is not a wildcard here and is rejected as a name. Each capability's\
+              \ reach is fixed by its own definition, stated above; the clause carries\
+              \ NAMES ONLY. Where a capability acts on individual records this clause's\
               \ data_scope narrows it too, but the name in this release is not per-record\
               \ — 'member-lifecycle' is bounded by the app contexts the credential\
               \ can reach, so data_scope does not narrow it."
@@ -7967,6 +8201,17 @@ components:
             \ set but this is absent)."
           format: int32
           example: 10000
+        readAccessLogDefault:
+          type: boolean
+          description: "Whether PHI read-access logging (the HIPAA §164.528 accounting\
+            \ of disclosures) is on by default for this context. A schema that sets\
+            \ `capabilities.readAccessLog` overrides it; a schema that does not inherits\
+            \ it. Null means no context default is set, so the platform default applies\
+            \ and logging is OFF. Use it to tell an empty `GET /v1/admin/access-log`\
+            \ result that genuinely means \"no one accessed this subject\" from one\
+            \ that means \"nothing was being recorded\"."
+          nullable: true
+          example: false
         identityProjectionClaims:
           type: array
           description: "The golden IdP-asserted identity claim names projected, read-only,\
@@ -8047,6 +8292,13 @@ components:
             \ enabled on their account."
           format: int32
           example: 10000
+        readAccessLogDefault:
+          type: boolean
+          description: Whether PHI read-access logging (the HIPAA §164.528 accounting
+            of disclosures) is on by default for this context. A schema that sets
+            `capabilities.readAccessLog` overrides it; a schema that does not inherits
+            it. Omit to leave unchanged.
+          example: true
         identityProjectionClaims:
           type: array
           description: "Declares which golden IdP-asserted identity claim names (from\
@@ -9665,10 +9917,11 @@ components:
           type: boolean
           description: "Whether this call created a new document. True when a new\
             \ document was created; false when a document with the same `externalId`\
-            \ already existed and a fresh upload URL to its existing object was re-issued\
-            \ (idempotent upload). Present only on the upload response (POST /v1/documents/upload).\
-            \ The HTTP status mirrors it — 201 when created, 200 when an existing\
-            \ document was returned."
+            \ already existed and a fresh upload URL was issued for it (idempotent\
+            \ upload); the upload targets a new object, and the document adopts it\
+            \ once the upload is validated. Present only on the upload response (POST\
+            \ /v1/documents/upload). The HTTP status mirrors it — 201 when created,\
+            \ 200 when an existing document was returned."
           example: true
         id:
           type: string
@@ -9680,12 +9933,15 @@ components:
           description: "Presigned upload URL. Upload the raw file bytes directly to\
             \ this URL with an HTTP PUT request, setting the Content-Type header to\
             \ the `fileType` you provided. No Authorization header is needed — the\
-            \ URL is self-authenticating."
+            \ URL is self-authenticating. Your PUT MUST also include the header named\
+            \ in `requiredHeaderName`, set to `requiredHeaderValue` exactly — the\
+            \ URL is single-use and this header is part of what makes it so; omitting\
+            \ it fails the request."
           example: https://bucket.s3.amazonaws.com/folder/file?X-Amz-Signature=...
         expiresAt:
           type: string
           description: ISO-8601 UTC timestamp at which the presigned URL expires.
-            The upload must complete before this time. Default expiry is 60 minutes.
+            The upload must complete before this time. Default expiry is 15 minutes.
           example: 2024-01-15T10:30:00Z
         externalId:
           type: string
@@ -9693,6 +9949,17 @@ components:
             \ back. Immutable, and unique within your account and context. Null when\
             \ you did not supply one."
           example: intake-doc-2024-0042
+        requiredHeaderName:
+          type: string
+          description: "HTTP header your PUT to `uploadUrl` MUST send. The presigned\
+            \ URL is single-use (S3 conditional writes) and this header is part of\
+            \ what makes its signature valid — omit it, or change its value, and the\
+            \ PUT is rejected."
+          example: If-None-Match
+        requiredHeaderValue:
+          type: string
+          description: "The exact value to send for `requiredHeaderName`, verbatim."
+          example: '*'
       description: Response containing the presigned upload URL and the assigned document
         ID.
     FileUploadRequest:
@@ -10680,6 +10947,12 @@ components:
               \ tokens on every successful exchange, beyond `emailClaim`. Absent (not\
               \ an empty list) when none are configured."
             example: "[\"name\",\"phone_number\"]"
+        restrictedToDomain:
+          type: string
+          description: "The verified domain this issuer's (issuer, audience) uniqueness\
+            \ is scoped to, if opted into. Absent when this registration is domain-less\
+            \ (the unrestricted, unscoped-to-any-population default)."
+          example: acmecorp.com
       description: A registered trusted third-party IdP issuer.
     SelfSignupPolicy:
       required:
@@ -10753,7 +11026,9 @@ components:
         jwksUri:
           type: string
           description: "The IdP's remote JWKS endpoint, used to verify presented tokens'\
-            \ signatures."
+            \ signatures. Must use the https:// scheme — an http:// endpoint is refused,\
+            \ since a plaintext fetch lets an on-path attacker substitute the signing\
+            \ keys this platform trusts for the issuer."
           example: https://your-tenant.us.auth0.com/.well-known/jwks.json
         audience:
           type: string
@@ -10791,7 +11066,11 @@ components:
             \ to calling this endpoint (with the presented token as the bearer credential)\
             \ and reads `emailClaim` from its JSON response instead. Omit to leave\
             \ the fallback disabled — a token that doesn't carry the configured email\
-            \ claim then fails first-login exactly as it does today."
+            \ claim then fails first-login exactly as it does today. Must use the\
+            \ https:// scheme — an http:// endpoint is refused, since the request\
+            \ carries your presented token as a bearer credential and a plaintext\
+            \ fetch lets an on-path attacker both harvest it and control the response\
+            \ this platform trusts back."
           example: https://your-tenant.us.auth0.com/userinfo
         selfSignupPolicies:
           type: array
@@ -10832,6 +11111,31 @@ components:
               \ `userinfoUri` (if configured) only for names still missing after that.\
               \ Omit entirely to capture nothing beyond email (the default)."
             example: "[\"name\",\"phone_number\"]"
+        restrictedToDomain:
+          type: string
+          description: "Opt-in domain-capture proof of issuer control. When set, this\
+            \ registration's (issuer, audience) uniqueness is scoped to this specific\
+            \ domain rather than the bare pair, so a registration for a domain you\
+            \ can prove you own is never blocked by an unrelated existing registration\
+            \ on the same (issuer, audience) pair. REQUIRES a VERIFIED domain for\
+            \ your partner account, proven via the SEPARATE, OWNER-authenticated developer\
+            \ portal (POST /developer/domains, then /verify — a Cognito-OWNER-gated\
+            \ surface, not reachable with this same partner-API credential; your account\
+            \ owner verifies the domain once, then this field references it by name)\
+            \ — registration is refused with 400 if the domain isn't already verified.\
+            \ At token-exchange time, this issuer's tokens are matched only when they\
+            \ carry an `hd` claim equal to this domain (the OIDC hosted-domain convention\
+            \ — Google emits this natively for Workspace/Cloud-org accounts; other\
+            \ IdPs need a claims-mapping rule configured to emit a claim literally\
+            \ named `hd`). Updatable later via PUT (unlike issuer/jwksUri/audience/contextId)\
+            \ — changing it never re-points an already-bound user's trust anchor or\
+            \ identity, only future routing eligibility; see `IssuerUpdateRequest.restrictedToDomain`.\
+            \ Omit to leave this issuer domain-less (the current, unrestricted behavior)\
+            \ — required for a shared/consumer IdP with no company-domain population,\
+            \ but note that population is NOT protected by proof-of-control: with\
+            \ no `hd` claim in a presented token, only a domain-less registration\
+            \ can ever match, exactly as today."
+          example: acmecorp.com
       description: Request body for registering a trusted third-party IdP issuer that
         BYO-IdP token exchange (`POST /v1/auth/token/exchange`) may accept a subject_token
         from.
@@ -10860,7 +11164,13 @@ components:
           example: casework
         subClaim:
           type: string
-          description: Safe field — updatable. Omit to leave unchanged.
+          description: "Updatable, but NOT a \"safe\" field in the sense the others\
+            \ on this object are: it names which verified JWT claim becomes a federated\
+            \ user's internal identity key, so changing it re-identifies (or, under\
+            \ self-signup, orphans) every user already bound through this issuer.\
+            \ Refused with 400 once the issuer has ever bound a user; freely updatable\
+            \ before that, and supplying the current value back is always a no-op.\
+            \ Omit to leave unchanged."
           example: sub
         emailClaim:
           type: string
@@ -10901,11 +11211,20 @@ components:
               empty list to stop capturing any claim beyond email. See `IssuerRequest.capturedClaims`
               for the full semantics.
             example: "[\"name\",\"phone_number\"]"
+        restrictedToDomain:
+          type: string
+          description: "Safe field — updatable. A NEW non-blank value must already\
+            \ be a VERIFIED domain for your account (same requirement as at registration);\
+            \ an empty string clears this issuer to domain-less (unrestricted). Omit\
+            \ to leave unchanged. See `IssuerRequest.restrictedToDomain` for the full\
+            \ semantics, including why this field is updatable while issuer/jwksUri/audience/contextId\
+            \ are not."
+          example: acmecorp.com
       description: "Partial-update request body for a registered issuer. Fields omitted\
         \ from the body are left unchanged. `issuer`/`jwksUri`/`audience`/`contextId`\
-        \ are trust-anchor / routing-pin fields: supplying a value that differs from\
-        \ the current registration is rejected with 400 (supplying the current value\
-        \ back is a no-op)."
+        \ are immutable once registered: supplying a value that differs from the current\
+        \ registration is rejected with 400 (supplying the current value back is a\
+        \ no-op). `restrictedToDomain` is updatable — see its own field description."
     ModelInfo:
       required:
       - availableOn
@@ -12026,6 +12345,36 @@ components:
         \ `values` (exact match on a lookup over several fields), `from` plus `to`\
         \ (range), or `prefix`. A `value`/`values` lookup may additionally be narrowed\
         \ by `sortFrom`/`sortTo`, which bound the lookup field's sort key."
+    TombstoneResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: The original Vectros-assigned UUID of the now-deleted record.
+          example: 550e8400-e29b-41d4-a716-446655440000
+        recordType:
+          type: string
+          description: The record type the deleted record belonged to.
+          example: patient_note
+        deletedBy:
+          type: string
+          description: Identifier of the user or API key that deleted the record.
+          example: user_abc123
+        deleteVersionId:
+          type: string
+          description: "The id of the DELETE entry in the record's version history\
+            \ (GET /v1/records/{id}/versions), if that history is still reachable."
+          example: 550e8400-e29b-41d4-a716-446655440000
+        deletionReason:
+          type: string
+          description: "A short, system-generated description of why the record was\
+            \ deleted."
+          example: Record deleted
+        deletedAt:
+          type: string
+          description: "Time the record was deleted, as an ISO-8601 UTC timestamp."
+          example: 2024-01-15T09:30:00Z
+      description: "The deletion fact for a hard-deleted record. Returned by GET /v1/records/{id}/tombstone."
     RecordPage:
       type: object
       properties:
@@ -12702,13 +13051,38 @@ components:
           example: 1
         source:
           type: string
-          description: The script's source text.
+          description: The script's source text. On a by-id GET this is always the
+            full text. On a list response (GET /v1/scripts) it is omitted by default
+            — see `sourceOmitted` — because scripts are immutable per version and
+            a version-history listing can otherwise carry every version's complete
+            source at once. Pass `?includeSource=true` to a list call to get it back
+            inline (at the cost of the same per-row weight a by-id GET pays).
           example: "export default function(input) { return { ok: true }; }"
+        sourceOmitted:
+          type: boolean
+          description: "True when THIS response omitted `source` because it came from\
+            \ a list call (GET /v1/scripts) without `?includeSource=true` — fetch\
+            \ the full source with a by-id GET or `?includeSource=true`. Null (omitted\
+            \ from the response) on a by-id GET or a create response, which return\
+            \ the full source unconditionally — same convention as a document's `payloadPartial`.\
+            \ Unlike that field, this is never a PARTIAL value: `source` is either\
+            \ the complete text or entirely absent, never truncated."
+          example: true
         declaredInputContract:
           type: string
           description: "Free-text description of the input shape this script expects,\
             \ or null if not supplied."
           example: "{ recordId: string, assigneeUserId: string }"
+        provisionedBy:
+          type: string
+          description: "The name of the blueprint that provisions this script, or\
+            \ null if it is unmanaged (hand-authored, or pushed before this field\
+            \ existed and never re-pushed). A later push of this name inherits it\
+            \ forward automatically when the push omits the field — see `ScriptRequest.provisionedBy`\
+            \ for the full mechanism, including why this is a live comparison against\
+            \ the current latest version rather than a value fixed for the name's\
+            \ whole history."
+          example: casework
         createdAt:
           type: string
           description: "When this script version was created, as an ISO-8601 UTC timestamp."
@@ -12750,6 +13124,22 @@ components:
             \ expects. Not validated or enforced in this release. Capped at 50,000\
             \ UTF-8 bytes (~50 KB) — an oversized value is rejected with a 400."
           example: "{ recordId: string, assigneeUserId: string }"
+        provisionedBy:
+          type: string
+          description: "An optional provenance marker naming the blueprint that provisions\
+            \ this script, so a convergent caller can tell a script it manages from\
+            \ one hand-authored or owned by a different blueprint. Not currently sent\
+            \ by `vectros bootstrap --blueprint`, which does not yet set this field\
+            \ for scripts. Leave it unset for a script you manage yourself. MAY BE\
+            \ SET ON ABSENT, NEVER CHANGED, evaluated against the CURRENT LATEST version\
+            \ of this `name` at push time: if the latest version has no marker recorded,\
+            \ this push may set any value (including onto a previously-unmarked, hand-authored\
+            \ name); if the latest version already has one recorded, an omitted value\
+            \ inherits it forward, and supplying a DIFFERENT value is refused. This\
+            \ compares against whichever version is newest right now, not a value\
+            \ fixed for the name's whole history — deleting the version(s) carrying\
+            \ a given marker and pushing again is unconstrained by it."
+          example: casework
       description: Request body for pushing a new script object version. Scripts are
         immutable per version — there is no update surface; push a new version with
         another POST.
@@ -13467,12 +13857,14 @@ components:
         status:
           type: string
           description: "The user's lifecycle status. `ACTIVE` users can be used normally;\
-            \ `SUSPENDED` users are retained, and no new credentials can be issued\
-            \ for them — credentials they already hold keep working until they expire\
-            \ or are revoked. `PENDING` is a server-managed state for invitations\
-            \ awaiting acceptance and cannot be set on this endpoint: send only `ACTIVE`\
-            \ or `SUSPENDED`. (A pending user becomes `ACTIVE` by sending status=ACTIVE\
-            \ together with `inviteToken`, `externalSubject`, and `emailVerifiedAttestation=true`.)"
+            \ `SUSPENDED` users are retained and cannot be issued new credentials,\
+            \ and any credentials they already hold stop working shortly after (already-issued\
+            \ scoped API keys stop authenticating within minutes; already-issued tokens\
+            \ run out their remaining lifetime and cannot be renewed). `PENDING` is\
+            \ a server-managed state for invitations awaiting acceptance and cannot\
+            \ be set on this endpoint: send only `ACTIVE` or `SUSPENDED`. (A pending\
+            \ user becomes `ACTIVE` by sending status=ACTIVE together with `inviteToken`,\
+            \ `externalSubject`, and `emailVerifiedAttestation=true`.)"
           example: ACTIVE
           enum:
           - ACTIVE
@@ -13769,12 +14161,11 @@ components:
           type: string
           description: "The `inv_*` invitation token from a sub-user invite email,\
             \ when this exchange is a first-time login for a subject with no existing\
-            \ Vectros identity yet (TOKEN-EXCHANGE-CONTRACT.md §6). Not part of RFC\
-            \ 8693 — a Vectros-specific extension field, additive to the standard\
-            \ grant. Omit for a subject that already has an active Vectros identity;\
-            \ required to complete first login for one that doesn't. Delivered to\
-            \ the end user out-of-band (the same invite-email link flow as today),\
-            \ never generated by this endpoint."
+            \ Vectros identity yet. Not part of RFC 8693 — a Vectros-specific extension\
+            \ field, additive to the standard grant. Omit for a subject that already\
+            \ has an active Vectros identity; required to complete first login for\
+            \ one that doesn't. Delivered to the end user out-of-band (the same invite-email\
+            \ link flow as today), never generated by this endpoint."
         signup_type:
           type: string
           description: |-
@@ -13843,13 +14234,18 @@ components:
           description: "Why the execution failed, from a fixed set of categories.\
             \ `RULE_DELETED`, `RULE_RETARGETED` and `TRIGGERS_DISABLED` never appear\
             \ here — those are the correct outcome of your own edit, not a failure.\
-            \ The categories you can see are: `CASCADE_DEPTH_EXCEEDED`, `INPUT_TOO_LARGE`\
-            \ (the rule's projected `fields` exceeded the 224 KB input limit — narrow\
-            \ the declaration), `PRINCIPAL_UNRESOLVED`, `GRANT_UNRESOLVED`, `SCRIPT_NOT_FOUND`,\
-            \ `WRITE_FROZEN`, `RATE_LIMITED`, `CREDIT_LIMIT_EXCEEDED`, `PRINCIPAL_QUOTA_EXCEEDED`,\
+            \ The categories you can see are: `INPUT_TOO_LARGE` (the rule's projected\
+            \ `fields` exceeded the 224 KB input limit — narrow the declaration),\
+            \ `PRINCIPAL_UNRESOLVED`, `GRANT_UNRESOLVED`, `SCRIPT_NOT_FOUND`, `WRITE_FROZEN`,\
+            \ `RATE_LIMITED`, `CREDIT_LIMIT_EXCEEDED`, `PRINCIPAL_QUOTA_EXCEEDED`,\
             \ `TENANT_CONCURRENCY_LIMIT`, `TIMEOUT`, `RESOURCE_LIMIT_EXCEEDED`, `WRITE_BUFFER_CAP_EXCEEDED`,\
             \ `MANIFEST_VIOLATION`, `AUTHORIZATION_DENIED`, `CONCURRENT_MODIFICATION`,\
-            \ `SCRIPT_ERROR` and `INTERNAL_ERROR`."
+            \ `SCRIPT_ERROR` and `INTERNAL_ERROR`. `CASCADE_DEPTH_EXCEEDED` is a fixed-set\
+            \ member you will NOT normally see: the platform now suppresses dispatch\
+            \ for a write past the cascade cap at its source, before any failure record\
+            \ is created, rather than dispatching it for you to refuse. The category\
+            \ is retained only as a defense-in-depth path and should be treated as\
+            \ effectively retired."
           example: SCRIPT_ERROR
         retryable:
           type: boolean
@@ -13908,9 +14304,12 @@ components:
         durationMs:
           type: integer
           description: "How long this attempt ran, in milliseconds, before it failed.\
-            \ Absent when nothing ran (for example `CASCADE_DEPTH_EXCEEDED`, which\
-            \ is refused before the script starts). Covers only the most recent attempt\
-            \ — see `attempts` for how many there were."
+            \ Absent when nothing ran (for example `SCRIPT_NOT_FOUND`, which is refused\
+            \ before the script starts). Despite sounding pre-flight, `MANIFEST_VIOLATION`\
+            \ and `AUTHORIZATION_DENIED` are NOT in this absent-duration set — both\
+            \ are chargeable execution outcomes, so durationMs is PRESENT for them,\
+            \ not absent. Covers only the most recent attempt — see `attempts` for\
+            \ how many there were."
           format: int64
           example: 1420
         createdAt:
