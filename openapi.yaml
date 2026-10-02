@@ -1,8 +1,8 @@
 openapi: 3.0.1
 info:
   title: Vectros API
-  description: Enterprise-grade hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.45.0"
+  description: Hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
+  version: "0.46.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -26,7 +26,7 @@ tags:
   - name: Inference
     description: Streaming LLM endpoints — chat, RAG, and per-document Q&A
   - name: Compliance
-    description: Subject-data lifecycle — right-to-erasure and data export (GDPR/CCPA)
+    description: Subject-data lifecycle — erasure requests; data export is reserved
   - name: Auth
     description: API key validation and scoped token minting
 
@@ -62,18 +62,17 @@ paths:
     get:
       tags:
       - Auth
-      summary: Query the PHI read-access (accounting-of-disclosures) log
+      summary: Query the read-access log
       description: "Returns a page of per-subject PHI read-access rows: who read which\
         \ subject's PHI, when, against which record, and whether any sensitive value\
         \ was actually revealed in plaintext. Metadata only — never the PHI itself.\
-        \ This is the disclosure-accounting surface from which a covered entity derives\
-        \ its HIPAA §164.528 accounting of disclosures. Provide at least one query\
-        \ axis: a subject (`subjectType` + `subjectId`) within a `contextId` for the\
-        \ primary accounting query; `resourceId` within a `contextId` for 'who read\
-        \ this record'; `callerKeyId` for 'what did this credential read' (account-wide\
-        \ forensic); or `contextId` alone to enumerate a whole context. `from`/`to`\
-        \ bound the time window. Results are scoped to your account, derived from\
-        \ your token — never from input. Requires the `access-log:r` scope."
+        \ Rows exist only where read-access logging is enabled. Provide at least one\
+        \ query axis: a subject (`subjectType` + `subjectId`) within a `contextId`\
+        \ for the primary accounting query; `resourceId` within a `contextId` for\
+        \ 'who read this record'; `callerKeyId` for 'what did this credential read'\
+        \ (account-wide forensic); or `contextId` alone to enumerate a whole context.\
+        \ `from`/`to` bound the time window. Results are scoped to your account, derived\
+        \ from your token — never from input. Requires the `access-log:r` scope."
       operationId: getAccessLog
       parameters:
       - name: subjectType
@@ -680,6 +679,9 @@ paths:
           description: The contextId format is invalid.
         "403":
           description: Not authorized.
+        "402":
+          description: This account has reached the maximum number of app contexts
+            (errorCode `SUBSCRIPTION_LIMIT_EXCEEDED`).
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -1485,7 +1487,11 @@ paths:
         \ Requires the `documents:c` scope to create. Being returned the existing\
         \ document on a collision is a read of that document's data and additionally\
         \ requires the `documents:r` scope — a credential holding `documents:c` alone\
-        \ receives a `400` (\"already exists\") on collision instead of the document."
+        \ receives a `400` (\"already exists\") on collision instead of the document.\
+        \ Supplying `externalId` WITHOUT `schemaId` is refused (`400`) unless you\
+        \ also pass `confirmUntyped=true` — externalId uniqueness is scoped per schema,\
+        \ so omitting `schemaId` by mistake would otherwise silently create a separate\
+        \ untyped document instead of targeting the typed one you likely meant."
       operationId: ingestDocument
       parameters:
       - name: upsert
@@ -1508,6 +1514,19 @@ paths:
           \ the overwrite is rejected unless you set `allowClear=true` to confirm\
           \ that clearing those fields is intended. Use PATCH to update without clearing\
           \ omitted fields. Defaults to `false`."
+        schema:
+          type: boolean
+          default: false
+      - name: confirmUntyped
+        in: query
+        description: "Required when the request supplies `externalId` but omits `schemaId`.\
+          \ Since externalId uniqueness is scoped per schema, an externalId-bearing\
+          \ request with no `schemaId` would otherwise silently land in a separate\
+          \ UNTYPED slot instead of the typed document the caller likely meant — pass\
+          \ `schemaId` to target the typed document, or `confirmUntyped=true` to confirm\
+          \ a genuinely untyped document is intended. Ignored (has no effect) when\
+          \ `schemaId` is supplied, or when `externalId` is omitted entirely. Defaults\
+          \ to `false`."
         schema:
           type: boolean
           default: false
@@ -1535,13 +1554,15 @@ paths:
                 $ref: "#/components/schemas/DocumentResponse"
         "400":
           description: "The request was invalid (for example, `text` is missing, or\
-            \ the payload failed schema validation); a document with the same `externalId`\
-            \ already exists but your credential lacks the `documents:r` scope needed\
-            \ to receive it, reported as an \"already exists\" error rather than the\
-            \ document; or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference` field's\
-            \ target type has more than one schema across different owners in this\
-            \ context, so the reference cannot be resolved. This endpoint has no way\
-            \ to select one owner's schema today; contact support if you hit this."
+            \ the payload failed schema validation); `externalId` was supplied without\
+            \ `schemaId` and without `confirmUntyped=true`; a document with the same\
+            \ `externalId` already exists but your credential lacks the `documents:r`\
+            \ scope needed to receive it, reported as an \"already exists\" error\
+            \ rather than the document; or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference`\
+            \ field's target type has more than one schema across different owners\
+            \ in this context, so the reference cannot be resolved. This endpoint\
+            \ has no way to select one owner's schema today; contact support if you\
+            \ hit this."
         "403":
           description: "Your API key or token lacks the `documents:c` scope required\
             \ to create a document (or, with `?upsert=true`, the `documents:u` scope\
@@ -1726,7 +1747,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DocumentRequest"
+              $ref: "#/components/schemas/DocumentPatchRequest"
         required: true
       responses:
         "200":
@@ -1746,9 +1767,9 @@ paths:
             \ because no single clause of it both authorizes this update and covers\
             \ the resulting ownership."
         "403":
-          description: The request tries to reassign the row's owning `userId`. The
-            principal is attributed by the server from your credential and cannot
-            be changed by an update.
+          description: No `documents:u` grant; `schemaId` sets a type your type-qualified
+            grant does not cover; or (scoped token) the request reassigns the owning
+            `userId`.
         "404":
           description: "No document with this ID exists in your account, or it is\
             \ outside your access scope."
@@ -2107,7 +2128,11 @@ paths:
         \ genuinely races a concurrent delete on the same object.** Whichever of `412`\
         \ or `409` you receive, the remedy is the same: call this endpoint again for\
         \ a fresh URL rather than retrying the same PUT — a fresh call always targets\
-        \ a new key, so it is never subject to whatever raced the previous one."
+        \ a new key, so it is never subject to whatever raced the previous one. Supplying\
+        \ `externalId` WITHOUT `schemaId` is refused (`400`) unless you also pass\
+        \ `confirmUntyped=true` — externalId uniqueness is scoped per schema, so omitting\
+        \ `schemaId` by mistake would otherwise silently create a separate untyped\
+        \ document instead of targeting the typed one you likely meant."
       operationId: uploadDocument
       parameters:
       - name: upsert
@@ -2117,6 +2142,19 @@ paths:
           \ (a metadata upsert) before re-issuing the presigned URL. The file body\
           \ is replaced inherently by the re-upload; it cannot be diffed at upload-init.\
           \ Defaults to `false`. Requires the `documents:u` scope in addition to `documents:c`."
+        schema:
+          type: boolean
+          default: false
+      - name: confirmUntyped
+        in: query
+        description: "Required when the request supplies `externalId` but omits `schemaId`.\
+          \ Since externalId uniqueness is scoped per schema, an externalId-bearing\
+          \ request with no `schemaId` would otherwise silently land in a separate\
+          \ UNTYPED slot instead of the typed document the caller likely meant — pass\
+          \ `schemaId` to target the typed document, or `confirmUntyped=true` to confirm\
+          \ a genuinely untyped document is intended. Ignored (has no effect) when\
+          \ `schemaId` is supplied, or when `externalId` is omitted entirely. Defaults\
+          \ to `false`."
         schema:
           type: boolean
           default: false
@@ -2145,10 +2183,12 @@ paths:
                 $ref: "#/components/schemas/FileUploadResponse"
         "400":
           description: "The request was invalid (for example, `fileName` or `fileType`\
-            \ is missing); or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference` field's\
-            \ target type has more than one schema across different owners in this\
-            \ context, so the reference cannot be resolved. This endpoint has no way\
-            \ to select one owner's schema today; contact support if you hit this."
+            \ is missing); `externalId` was supplied without `schemaId` and without\
+            \ `confirmUntyped=true`; or (errorCode `AMBIGUOUS_RECORD_TYPE`) a `reference`\
+            \ field's target type has more than one schema across different owners\
+            \ in this context, so the reference cannot be resolved. This endpoint\
+            \ has no way to select one owner's schema today; contact support if you\
+            \ hit this."
         "403":
           description: "Your API key or token lacks the required scope: `documents:c`\
             \ to create a new document, or `documents:u` to re-upload over (or `?upsert`\
@@ -2684,14 +2724,15 @@ paths:
       tags:
       - Compliance
       summary: Submit an end-subject erasure request
-      description: "Submits a right-to-erasure request for a single end-subject (a\
-        \ user, or an identity entity in any namespace). Erasure removes exactly the\
-        \ data the subject solely owns across the declared contexts, plus the subject's\
-        \ identity and lookup rows. It never touches another account's data and never\
-        \ cascades into another subject's data. The request is asynchronous: it returns\
-        \ 202 with a `requestId`; poll `GET /v1/erasure-requests/{id}` until the job\
-        \ completes to obtain the completion certificate. Requires a root API key\
-        \ — a scoped credential is rejected with 403."
+      description: "Submits an erasure request for a single end-subject (a user, or\
+        \ an identity entity in any namespace). Erasure deletes the records, documents,\
+        \ folders and record schemas the subject solely owns across the declared contexts\
+        \ (and, for a user, its access profiles there), plus its identity and lookup\
+        \ rows when all contexts are covered. Rows co-owned with another owner scope\
+        \ or principal are kept; read-access log entries are not erased. The request\
+        \ is asynchronous: it returns 202 with a `requestId`; poll `GET /v1/erasure-requests/{id}`\
+        \ until the job completes to obtain the completion certificate. Requires a\
+        \ root API key — a scoped credential is rejected with 403."
       operationId: createErasureRequest
       requestBody:
         content:
@@ -2711,8 +2752,8 @@ paths:
           description: Not authorized. This operation requires a root API key; scoped
             credentials cannot submit erasure requests.
         "400":
-          description: "The request is malformed, or the named subject could not be\
-            \ resolved."
+          description: "The request is malformed, the subject or a `contextScope`\
+            \ context cannot be resolved, or `purge` is unsupported for its type."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -2738,9 +2779,9 @@ paths:
       summary: Get the status and certificate of an erasure request
       description: "Polls an erasure request by id. While the job is still running\
         \ this returns its status only; once it completes, the response also includes\
-        \ the verifiable completion certificate (which contexts were swept, per-context\
-        \ deletion counts, and reports of dangling references and shared rows that\
-        \ were left intact). Requires a root API key."
+        \ the completion certificate (which contexts were swept, per-context deletion\
+        \ counts, whether the identity was kept, and reports of dangling references\
+        \ and shared rows left intact). Requires a root API key."
       operationId: getErasureRequest
       parameters:
       - name: id
@@ -3269,7 +3310,7 @@ paths:
       description: "Updates the mutable fields of a registered issuer: `subClaim`,\
         \ `emailClaim`, `userinfoUri`, `capturedClaims`, `restrictedToDomain` (a new\
         \ non-blank value must already be a VERIFIED domain for your account; an empty\
-        \ string clears it back to domain-less; see `IssuerUpdateRequest.restrictedToDomain`\
+        \ string clears it where permitted; see `IssuerUpdateRequest.restrictedToDomain`\
         \ for the full semantics), `status` (`active`/`suspended` — a registration\
         \ awaiting verification (`pending_verification`) accepts no status change\
         \ until it is verified; a suspended issuer's tokens are rejected identically\
@@ -6954,8 +6995,8 @@ paths:
             \ your monthly credit allowance is exceeded, or the requested model is\
             \ not available on your plan."
         "403":
-          description: You requested global (non-US) region serving (`allowGlobalRegion=true`)
-            but your account has no signed global-processing waiver in effect.
+          description: "Requested global region without a waiver, OR `providerAlias`\
+            \ names a config you lack or aren't waived for."
         "429":
           description: "You have exceeded the per-minute rate limit for your plan.\
             \ Read the `Retry-After` response header for the number of seconds to\
@@ -7000,8 +7041,8 @@ paths:
             \ your monthly credit allowance is exceeded, or the requested model is\
             \ not available on your plan."
         "403":
-          description: You requested global (non-US) region serving (`allowGlobalRegion=true`)
-            but your account has no signed global-processing waiver in effect.
+          description: "Requested global region without a waiver, OR `providerAlias`\
+            \ names a config you lack or aren't waived for."
         "404":
           description: No document with the given id exists in your account.
         "409":
@@ -7059,8 +7100,8 @@ paths:
             \ your monthly credit allowance is exceeded, or the requested model is\
             \ not available on your plan."
         "403":
-          description: You requested global (non-US) region serving (`allowGlobalRegion=true`)
-            but your account has no signed global-processing waiver in effect.
+          description: "Requested global region without a waiver, OR `providerAlias`\
+            \ names a config you lack or aren't waived for."
         "429":
           description: "You have exceeded the per-minute rate limit for your plan.\
             \ Read the `Retry-After` response header for the number of seconds to\
@@ -7259,15 +7300,18 @@ components:
         retainUntil:
           type: string
           description: "The earliest this row may be disposed of, recorded at write\
-            \ time (ISO-8601 UTC). Advisory only — it is not an automatic expiry.\
-            \ Null when no retention floor applies."
+            \ time (ISO-8601 UTC). The retention purge removes a row only when your\
+            \ current retention disposition is `delete` and its retention time has\
+            \ passed; a row is also removed when its app context or account is deleted.\
+            \ Null when no retention duration was set at write time; such a row is\
+            \ then held to at least the platform default (about 7 years) if you later\
+            \ choose `delete`."
           example: 2031-01-15T09:30:00Z
         recipientRef:
           type: string
           description: "Reserved for future use — not yet populated, so this is currently\
             \ always null. When implemented, it will record the basis for the access\
-            \ (e.g. treatment, payment, operations, or an external disclosure) to\
-            \ support a §164.528 accounting."
+            \ (e.g. treatment, payment, operations, or an external disclosure)."
           example: treatment
         createdAt:
           type: string
@@ -7692,23 +7736,24 @@ components:
             \ sub-user invitations), and 'logs:r'; you may add custom 'resource:ops'\
             \ verbs for application-specific resources. Bare verbs like 'read'/'write'/'delete'\
             \ are NOT grantable — use the resource:ops form. A ':qualifier' segment\
-            \ is honored only where it actually narrows the grant — 'records'/'entities'\
-            \ correlate it for every op; 'documents'/'users' correlate it ONLY for\
-            \ the 's' op (e.g. 'documents:s:invoice' restricts sensitive-field reveal\
-            \ to that type); 'profiles' correlates it ONLY for c/u/d (create/update/delete),\
-            \ confining WHICH principal the grant may act on — a literal 'usr_<id>'\
-            \ principal, or the bare 'self' sentinel, which matches only when the\
-            \ target principal is your own bound identity (a bare, unqualified 'profiles:cru'\
-            \ stays broad and unaffected); 'scripts' correlates it ONLY for the 'x'\
-            \ op, naming WHICH script may be executed ('scripts:x:create-case-folder'\
-            \ — every version of that name). A qualifier on any other resource/op\
-            \ combination — e.g. 'documents:r:invoice' or 'profiles:r:self' — is rejected\
-            \ at authoring time rather than silently ignored. The 'x' letter itself\
-            \ is accepted on every resource but has an effect only on 'scripts'; 'records:x'\
-            \ is valid and grants nothing. \n\nOne cross-field caveat: if this clause\
-            \ also carries a 'granted_capabilities' entry that this release does not\
-            \ recognize, the WHOLE clause is denied and none of these verbs apply.\
-            \ See that field."
+            \ is honored only where it actually narrows the grant — 'records'/'entities'/'documents'\
+            \ correlate it for every op (e.g. 'documents:r:invoice' restricts reads\
+            \ to that document type; an untyped document only matches an UNqualified\
+            \ 'documents:r'); 'users' correlates it ONLY for the 's' op (e.g. 'users:s:employee'\
+            \ restricts sensitive-field reveal to that type); 'profiles' correlates\
+            \ it ONLY for c/u/d (create/update/delete), confining WHICH principal\
+            \ the grant may act on — a literal 'usr_<id>' principal, or the bare 'self'\
+            \ sentinel, which matches only when the target principal is your own bound\
+            \ identity (a bare, unqualified 'profiles:cru' stays broad and unaffected);\
+            \ 'scripts' correlates it ONLY for the 'x' op, naming WHICH script may\
+            \ be executed ('scripts:x:create-case-folder' — every version of that\
+            \ name). A qualifier on any other resource/op combination — e.g. 'folders:r:foo'\
+            \ or 'profiles:r:self' — is rejected at authoring time rather than silently\
+            \ ignored. The 'x' letter itself is accepted on every resource but has\
+            \ an effect only on 'scripts'; 'records:x' is valid and grants nothing.\
+            \ \n\nOne cross-field caveat: if this clause also carries a 'granted_capabilities'\
+            \ entry that this release does not recognize, the WHOLE clause is denied\
+            \ and none of these verbs apply. See that field."
           example:
           - records:cru
           - search:r
@@ -7727,23 +7772,25 @@ components:
               \ you may add custom 'resource:ops' verbs for application-specific resources.\
               \ Bare verbs like 'read'/'write'/'delete' are NOT grantable — use the\
               \ resource:ops form. A ':qualifier' segment is honored only where it\
-              \ actually narrows the grant — 'records'/'entities' correlate it for\
-              \ every op; 'documents'/'users' correlate it ONLY for the 's' op (e.g.\
-              \ 'documents:s:invoice' restricts sensitive-field reveal to that type);\
-              \ 'profiles' correlates it ONLY for c/u/d (create/update/delete), confining\
-              \ WHICH principal the grant may act on — a literal 'usr_<id>' principal,\
-              \ or the bare 'self' sentinel, which matches only when the target principal\
-              \ is your own bound identity (a bare, unqualified 'profiles:cru' stays\
-              \ broad and unaffected); 'scripts' correlates it ONLY for the 'x' op,\
-              \ naming WHICH script may be executed ('scripts:x:create-case-folder'\
-              \ — every version of that name). A qualifier on any other resource/op\
-              \ combination — e.g. 'documents:r:invoice' or 'profiles:r:self' — is\
-              \ rejected at authoring time rather than silently ignored. The 'x' letter\
-              \ itself is accepted on every resource but has an effect only on 'scripts';\
-              \ 'records:x' is valid and grants nothing. \n\nOne cross-field caveat:\
-              \ if this clause also carries a 'granted_capabilities' entry that this\
-              \ release does not recognize, the WHOLE clause is denied and none of\
-              \ these verbs apply. See that field."
+              \ actually narrows the grant — 'records'/'entities'/'documents' correlate\
+              \ it for every op (e.g. 'documents:r:invoice' restricts reads to that\
+              \ document type; an untyped document only matches an UNqualified 'documents:r');\
+              \ 'users' correlates it ONLY for the 's' op (e.g. 'users:s:employee'\
+              \ restricts sensitive-field reveal to that type); 'profiles' correlates\
+              \ it ONLY for c/u/d (create/update/delete), confining WHICH principal\
+              \ the grant may act on — a literal 'usr_<id>' principal, or the bare\
+              \ 'self' sentinel, which matches only when the target principal is your\
+              \ own bound identity (a bare, unqualified 'profiles:cru' stays broad\
+              \ and unaffected); 'scripts' correlates it ONLY for the 'x' op, naming\
+              \ WHICH script may be executed ('scripts:x:create-case-folder' — every\
+              \ version of that name). A qualifier on any other resource/op combination\
+              \ — e.g. 'folders:r:foo' or 'profiles:r:self' — is rejected at authoring\
+              \ time rather than silently ignored. The 'x' letter itself is accepted\
+              \ on every resource but has an effect only on 'scripts'; 'records:x'\
+              \ is valid and grants nothing. \n\nOne cross-field caveat: if this clause\
+              \ also carries a 'granted_capabilities' entry that this release does\
+              \ not recognize, the WHOLE clause is denied and none of these verbs\
+              \ apply. See that field."
             example: "[\"records:cru\",\"search:r\"]"
         data_scope:
           type: object
@@ -8291,13 +8338,12 @@ components:
           example: 10000
         readAccessLogDefault:
           type: boolean
-          description: "Whether PHI read-access logging (the HIPAA §164.528 accounting\
-            \ of disclosures) is on by default for this context. A schema that sets\
-            \ `capabilities.readAccessLog` overrides it; a schema that does not inherits\
-            \ it. Null means no context default is set, so the platform default applies\
-            \ and logging is OFF. Use it to tell an empty `GET /v1/admin/access-log`\
-            \ result that genuinely means \"no one accessed this subject\" from one\
-            \ that means \"nothing was being recorded\"."
+          description: "Whether read-access logging is on by default for this context.\
+            \ A schema that sets `capabilities.readAccessLog` overrides it; a schema\
+            \ that does not inherits it. Null means no context default is set, so\
+            \ the platform default applies and logging is OFF. Use it to tell an empty\
+            \ `GET /v1/admin/access-log` result that genuinely means \"no one accessed\
+            \ this subject\" from one that means \"nothing was being recorded\"."
           nullable: true
           example: false
         identityProjectionClaims:
@@ -8382,10 +8428,9 @@ components:
           example: 10000
         readAccessLogDefault:
           type: boolean
-          description: Whether PHI read-access logging (the HIPAA §164.528 accounting
-            of disclosures) is on by default for this context. A schema that sets
-            `capabilities.readAccessLog` overrides it; a schema that does not inherits
-            it. Omit to leave unchanged.
+          description: Whether read-access logging is on by default for this context.
+            A schema that sets `capabilities.readAccessLog` overrides it; a schema
+            that does not inherits it. Omit to leave unchanged.
           example: true
         identityProjectionClaims:
           type: array
@@ -9998,6 +10043,82 @@ components:
       description: "A page of documents as a `{data, nextCursor}` envelope. `nextCursor`\
         \ is an opaque cursor — pass it back as `startFrom` to fetch the next page,\
         \ or null when no more pages remain."
+    DocumentPatchRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Human-readable document title. Omit to leave the existing title
+            unchanged.
+          example: Patient Intake Form — Jane Doe
+        text:
+          type: string
+          description: Raw text content. Supply it to re-ingest and replace the stored
+            text; omit it to leave the existing text unchanged.
+          example: Patient presented with symptoms of...
+        folderId:
+          type: string
+          description: ID of the folder to place this document in. Omit to leave unchanged.
+          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
+        payload:
+          type: object
+          additionalProperties: true
+          description: "The document's structured data, as a flat key/value object.\
+            \ Deep-merged into the existing payload: keys you send overwrite existing\
+            \ values, a key set to `null` is deleted, and keys you omit are preserved.\
+            \ Omit the field entirely to leave the payload unchanged."
+          example:
+            patientId: P-1042
+            status: active
+        schemaId:
+          type: string
+          description: ID of a record schema to bind this document to. Omit to leave
+            unchanged.
+          example: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
+        userId:
+          type: string
+          description: "Owning user ID. With an API key, sets the document's owner\
+            \ explicitly. With a scoped token the owning user is attributed by the\
+            \ server and cannot be changed; supplying one that conflicts is rejected.\
+            \ Omit to leave unchanged."
+          example: 550e8400-e29b-41d4-a716-446655440000
+        scopes:
+          type: array
+          description: "The document's scope ownership, as `namespace:value` entries\
+            \ (at most 2 namespaces; a value is 1-128 characters, a letter or digit\
+            \ first then letters/digits/`_`/`-`) — the COMPLETE new selection when\
+            \ supplied (`[]` clears it to the private tier). Omit to leave ownership\
+            \ unchanged."
+          example:
+          - group:eng-team
+          items:
+            type: string
+            description: "The document's scope ownership, as `namespace:value` entries\
+              \ (at most 2 namespaces; a value is 1-128 characters, a letter or digit\
+              \ first then letters/digits/`_`/`-`) — the COMPLETE new selection when\
+              \ supplied (`[]` clears it to the private tier). Omit to leave ownership\
+              \ unchanged."
+            example: "[\"group:eng-team\"]"
+        expectedVersion:
+          type: integer
+          description: Optimistic-concurrency token. Pass the `version` you last read
+            to make this update conditional — rejected with `409 VERSION_CONFLICT`
+            if the document changed since. Omit for last-write-wins.
+          format: int64
+          example: 5
+        status:
+          type: string
+          description: "Caller-controlled lifecycle status. `ARCHIVED` soft-retracts\
+            \ the document (pulled from search, kept and recoverable); `ACTIVE` restores\
+            \ it. Omit to leave unchanged."
+          example: ARCHIVED
+          enum:
+          - ACTIVE
+          - ARCHIVED
+      description: "Request body for PATCH /v1/documents/{id} (RFC 7386 JSON Merge\
+        \ Patch). Every field is optional: omit a field to leave it unchanged; a present\
+        \ field is applied; `payload` is deep-merged rather than replaced. Sending\
+        \ a top-level field as `null` is rejected."
     FileUploadResponse:
       type: object
       properties:
@@ -10420,8 +10541,9 @@ components:
         contextsSwept:
           type: array
           description: "The contexts that were actually swept. When you omit or leave\
-            \ the request's context scope empty, this lists every context the subject\
-            \ had data in. Any context not listed here was not erased."
+            \ the request's context scope empty, this lists every context of your\
+            \ account, whether or not the subject held data in it. Any context not\
+            \ listed here was not erased."
           items:
             type: string
             example: ctx_marketing
@@ -10433,30 +10555,50 @@ components:
             $ref: "#/components/schemas/ErasureContextResult"
         danglingReferences:
           type: integer
-          description: Number of reference fields within your account that point at
-            the erased subject and were left dangling. These are reported for your
-            own diagnosis and are never automatically cascaded into another subject's
-            records.
+          description: "Number of rows that referenced the erased subject through\
+            \ a reverse-indexed `reference` field, counted before the erasure ran\
+            \ (including any such rows that the same request then deleted). Reverse\
+            \ indexing is a schema setting the public API does not offer, so this\
+            \ is 0 for schemas created through it; a plain `reference` field, or an\
+            \ id copied into a text field, is not counted. This is a report for your\
+            \ own diagnosis: erasure does not change records it does not solely own,\
+            \ so nothing is repaired for you."
           format: int64
           example: 0
         sharedRowsSkipped:
           type: integer
-          description: Number of shared or ownerless rows that the subject did not
-            solely own. These are reported but not erased — erasure only removes rows
-            the subject solely owns.
+          description: "Number of rows the subject owned together with another owner\
+            \ scope or principal. These are kept and counted here, not erased: erasure\
+            \ removes only rows the subject solely owns."
           format: int64
           example: 0
         auditDisposition:
           type: string
           description: "The audit-trail disposition that was applied, echoing the\
-            \ request."
+            \ request. `purge` is reported only for a request that was accepted for\
+            \ a subject type that supports it, and means the audit records of the\
+            \ erased rows were removed; stored audit payloads are deleted asynchronously\
+            \ and follow shortly after the request completes, and a delete that cannot\
+            \ complete is retried and raised to Vectros operations, so a completed\
+            \ request does not by itself prove every payload is already gone."
           example: retain-redacted
           enum:
           - retain-redacted
           - purge
-      description: "Verifiable proof of an erasure: which contexts were swept, the\
-        \ per-context deletion counts, and reports of references and shared rows that\
-        \ were detected but deliberately left intact rather than cascaded."
+        identityRetained:
+          type: boolean
+          description: "Present and true when the subject's identity, and its identity-level\
+            \ audit history under `purge`, were deliberately kept because the request's\
+            \ `contextScope` did not cover every context of your account. The identity\
+            \ is account-wide, so it is deleted only by a request that covers every\
+            \ context (or, for an entity that belongs to a single context, that lists\
+            \ that context); send a further request without `contextScope` to finish.\
+            \ Absent when the identity was deleted."
+          nullable: true
+          example: true
+      description: "Completion certificate for an erasure request: which contexts\
+        \ were swept, the per-context deletion counts, whether the identity was kept,\
+        \ and reports of references and shared rows that were detected but not cascaded."
     ErasureContextResult:
       type: object
       properties:
@@ -10481,10 +10623,12 @@ components:
           example: 3
         identityRowsDeleted:
           type: integer
-          description: "Number of identity rows deleted (the subject's user or identity-entity\
-            \ record plus its lookup rows). Because the subject's identity is account-wide\
-            \ rather than per-context, it is counted only once here — against the\
-            \ context in which it was resolved."
+          description: "Number of identity rows deleted: 1 for the subject's user\
+            \ or identity-entity record (its lookup rows are removed with it but not\
+            \ counted). Because the subject's identity is account-wide rather than\
+            \ per-context, it is counted only once here — against the first context\
+            \ swept — and only when the identity was deleted; otherwise it is 0 everywhere\
+            \ and the certificate's `identityRetained` is true."
           format: int64
           example: 1
       description: Deletion counts for a single erased context.
@@ -10537,7 +10681,7 @@ components:
           $ref: "#/components/schemas/ErasureCertificate"
       description: Job handle and result for an asynchronous erasure request. While
         the job runs this carries its status; once it completes it also carries a
-        certificate that is the verifiable record of exactly what was erased.
+        certificate recording what the request swept and deleted.
     ErasureRequest:
       required:
       - subjectType
@@ -10565,27 +10709,55 @@ components:
           description: "The contexts in which to erase the subject. As the data controller,\
             \ you declare the blast radius: each listed context is erased independently\
             \ and reported separately on the certificate. Omit or leave empty to erase\
-            \ every context the subject has data in; those contexts are then enumerated\
-            \ and erased one at a time, never as a single account-wide sweep. Any\
-            \ context you do not list is left untouched, and managing that residual\
-            \ data is your responsibility."
+            \ in every context of your account: every context is swept, whether or\
+            \ not the subject holds data in it. Any context you do not list is left\
+            \ untouched, including the subject's access grants there, and managing\
+            \ that residual data is your responsibility. Every listed context must\
+            \ exist in your account: a `contextScope` that names a context that does\
+            \ not exist is rejected with 400 before anything is erased. A row in a\
+            \ listed context that is co-owned with another owner scope or principal\
+            \ is kept, not erased, and counted as `sharedRowsSkipped`. The subject's\
+            \ identity (its user or entity record) is account-wide rather than per-context,\
+            \ so it is deleted only when the request covers every context of your\
+            \ account, by omitting `contextScope` or by listing them all; the one\
+            \ exception is an entity that belongs to a single context (a context-owned\
+            \ namespace), which is deleted when that context is listed. A request\
+            \ that lists only some contexts leaves the identity in place and sets\
+            \ `identityRetained` on the certificate, so you can send further requests\
+            \ for the remaining contexts; send one without `contextScope` to finish\
+            \ and delete the identity."
           items:
             type: string
             example: ctx_marketing
         auditDisposition:
           type: string
-          description: How to handle the subject's audit and version-history trail.
-            This governs only the audit data — the subject's records and documents
-            are always erased regardless. `retain-redacted` (the default) keeps the
-            compliance audit trail with sensitive data redacted; `purge` additionally
-            hard-removes the audit history itself (subject to your legal obligations).
+          description: "How to handle the subject's audit and version-history trail.\
+            \ This governs only the audit data — the subject's records and documents\
+            \ are always erased regardless. `retain-redacted` (the default) keeps\
+            \ the compliance audit trail with sensitive data redacted. `purge` additionally\
+            \ hard-removes the audit history of the rows this request erased, including\
+            \ the subject's own identity history and the audit payloads stored outside\
+            \ the database for those rows. `purge` is supported only for subject types\
+            \ `user`, `org` and `client` — a request for any other subject type is\
+            \ rejected with 400 — and it never removes the history of a row that was\
+            \ retained because another principal also owns it. `purge` finds history\
+            \ through the owner each version carried when it was written, so it is\
+            \ a primitive, not a completeness guarantee: versions written while a\
+            \ row belonged to a different owner are not found, and the history of\
+            \ an already-deleted row that another owner shared is removed together\
+            \ with the erased owner's. Stored audit payloads are deleted asynchronously:\
+            \ the request completes once the audit records are removed, and the payloads\
+            \ follow shortly after; a payload delete that cannot complete is retried\
+            \ and raised to Vectros operations, so `completed` does not by itself\
+            \ prove every payload is already gone. `purge` is subject to your own\
+            \ legal-retention obligations; it does not consult a retention setting."
           example: retain-redacted
           default: retain-redacted
           enum:
           - retain-redacted
           - purge
-      description: Request body for an end-subject right-to-erasure request. Requires
-        a root API key.
+      description: Request body for an end-subject erasure request. Requires a root
+        API key.
     ExportManifest:
       type: object
       properties:
@@ -11043,7 +11215,7 @@ components:
           type: string
           description: "The verified domain this issuer's (issuer, audience) uniqueness\
             \ is scoped to, if opted into. Absent when this registration is domain-less\
-            \ (the unrestricted, unscoped-to-any-population default)."
+            \ (unrestricted)."
           example: acmecorp.com
         verificationClaim:
           type: string
@@ -11331,14 +11503,23 @@ components:
           type: string
           description: "Safe field — updatable. A NEW non-blank value must already\
             \ be a VERIFIED domain for your account (same requirement as at registration);\
-            \ an empty string clears this issuer to domain-less (unrestricted) — refused\
-            \ with 400 unless this registration has itself proven control of the unrestricted\
-            \ (issuer, audience) pair (it was registered without a domain and verified);\
-            \ a registration created scoped to a domain must instead register a new\
-            \ issuer without `restrictedToDomain` and verify it. Refused on a registration\
-            \ awaiting verification. Omit to leave unchanged. See `IssuerRequest.restrictedToDomain`\
-            \ for the full semantics, including why this field is updatable while\
-            \ issuer/jwksUri/audience/contextId are not."
+            \ an empty string clears this issuer to domain-less (unrestricted), and\
+            \ is refused with 400 unless this registration holds the unrestricted\
+            \ (issuer, audience) pair. A registration holds it if it was registered\
+            \ without a domain and then verified (it keeps it if later scoped to a\
+            \ domain); a registration created scoped to a domain never holds it, and\
+            \ neither does an older registration that predates pair claims. To get\
+            \ an unrestricted issuer in that case, delete the scoped registration,\
+            \ register a new issuer without `restrictedToDomain`, and verify it. An\
+            \ app context holds one issuer registration at a time, of any status,\
+            \ so a replacement in the same context is possible only after the delete\
+            \ succeeds. A registration that any user was created or matched through\
+            \ cannot be deleted (409): register the replacement under a different\
+            \ app context, which does not carry over the old context's users, roles\
+            \ or access profiles. A registration awaiting verification cannot be re-scoped.\
+            \ Omit to leave unchanged. See `IssuerRequest.restrictedToDomain` for\
+            \ the full semantics, including why this field is updatable while issuer/jwksUri/audience/contextId\
+            \ are not."
           example: acmecorp.com
       description: "Partial-update request body for a registered issuer. Fields omitted\
         \ from the body are left unchanged. `issuer`/`jwksUri`/`audience`/`contextId`\
@@ -13719,14 +13900,16 @@ components:
         allowedActions:
           type: array
           description: "The actions this token may perform. Each entry has the form\
-            \ `resource:operations`, where `operations` is one of `r` (read), `c`\
-            \ (create), `u` (update), `d` (delete), `crud` (all four), or a colon-separated\
-            \ combination. For records you may append a type qualifier, e.g. `records:r:intake_form`.\
+            \ `resource:operations`, where `operations` is one or more of the letters\
+            \ `r` (read), `c` (create), `u` (update), `d` (delete), `s` (reveal sensitive\
+            \ fields) and `x` (execute, on `scripts`), written together in one segment,\
+            \ for example `cru` or `crud`. For records and documents you may append\
+            \ a type qualifier, e.g. `records:r:intake_form` or `documents:r:invoice`.\
             \ For identity entities the grammar is `entities:<verb>:<namespace>`,\
             \ e.g. `entities:r:org` or `entities:c:client` (reserved namespaces `org`\
-            \ and `client`). Valid resources are: `entities`, `users`, `documents`,\
-            \ `folders`, `records`, `schemas`, and `search`. `namespaces` is deliberately\
-            \ not among them: reading the namespace registry is open to any credential,\
+            \ and `client`). Resources include `entities`, `users`, `documents`, `folders`,\
+            \ `records`, `schemas`, and `search`. `namespaces` is deliberately not\
+            \ among them: reading the namespace registry is open to any credential,\
             \ and registering, updating, or deleting a namespace requires a root API\
             \ key — so a `namespaces:<verb>` entry would neither grant nor withhold\
             \ anything."
@@ -13737,12 +13920,14 @@ components:
           items:
             type: string
             description: "The actions this token may perform. Each entry has the form\
-              \ `resource:operations`, where `operations` is one of `r` (read), `c`\
-              \ (create), `u` (update), `d` (delete), `crud` (all four), or a colon-separated\
-              \ combination. For records you may append a type qualifier, e.g. `records:r:intake_form`.\
+              \ `resource:operations`, where `operations` is one or more of the letters\
+              \ `r` (read), `c` (create), `u` (update), `d` (delete), `s` (reveal\
+              \ sensitive fields) and `x` (execute, on `scripts`), written together\
+              \ in one segment, for example `cru` or `crud`. For records and documents\
+              \ you may append a type qualifier, e.g. `records:r:intake_form` or `documents:r:invoice`.\
               \ For identity entities the grammar is `entities:<verb>:<namespace>`,\
               \ e.g. `entities:r:org` or `entities:c:client` (reserved namespaces\
-              \ `org` and `client`). Valid resources are: `entities`, `users`, `documents`,\
+              \ `org` and `client`). Resources include `entities`, `users`, `documents`,\
               \ `folders`, `records`, `schemas`, and `search`. `namespaces` is deliberately\
               \ not among them: reading the namespace registry is open to any credential,\
               \ and registering, updating, or deleting a namespace requires a root\
@@ -14890,7 +15075,9 @@ components:
         model:
           type: string
           description: "Model alias to use, from the list returned by `GET /v1/models`.\
-            \ Defaults to `claude-haiku-4-5`."
+            \ Defaults to `claude-haiku-4-5`. When `providerAlias` is set, this instead\
+            \ names the MODEL on that BYO provider's own id space (opaque to Vectros)\
+            \ — falls back to the provider config's own default model when omitted."
         maxTokens:
           type: integer
           description: Maximum number of tokens to generate. Defaults to 2048; the
@@ -14915,6 +15102,19 @@ components:
             \ setting. Configure data residency under Data Residency and Region settings\
             \ in the developer portal."
           example: false
+        providerAlias:
+          type: string
+          description: "Route this request through a BYO (bring-your-own) model provider\
+            \ config instead of platform-hosted Bedrock — the alias of a provider\
+            \ config your account has activated (a customer-supplied Anthropic key\
+            \ or OpenAI-compatible endpoint). Requires the corresponding risk waiver\
+            \ on your account; otherwise, or if the alias is unknown or inactive,\
+            \ the request is rejected with 403. The request is sent to the endpoint\
+            \ on that config: `allowGlobalRegion` and your residency settings do not\
+            \ apply, and the provider determines where it is processed. If neither\
+            \ `model` nor the config's default model is set, the request is rejected\
+            \ with 400. When omitted, the request is served by platform-hosted Bedrock\
+            \ — this field is entirely additive."
       description: Request body for `POST /v1/chat`.
     DocumentAskStreamEvent:
       type: object
@@ -14977,7 +15177,9 @@ components:
         model:
           type: string
           description: "Model alias to use, from the list returned by `GET /v1/models`.\
-            \ Defaults to `claude-haiku-4-5`."
+            \ Defaults to `claude-haiku-4-5`. When `providerAlias` is set, this instead\
+            \ names the MODEL on that BYO provider's own id space (opaque to Vectros)\
+            \ — falls back to the provider config's own default model when omitted."
         maxTokens:
           type: integer
           description: Maximum number of tokens to generate. Defaults to 2048; the
@@ -14995,6 +15197,19 @@ components:
             \ 403. When omitted, the request follows your account's default residency\
             \ setting."
           example: false
+        providerAlias:
+          type: string
+          description: "Route this request through a BYO (bring-your-own) model provider\
+            \ config instead of platform-hosted Bedrock — the alias of a provider\
+            \ config your account has activated (a customer-supplied Anthropic key\
+            \ or OpenAI-compatible endpoint). Requires the corresponding risk waiver\
+            \ on your account; otherwise, or if the alias is unknown or inactive,\
+            \ the request is rejected with 403. The request is sent to the endpoint\
+            \ on that config: `allowGlobalRegion` and your residency settings do not\
+            \ apply, and the provider determines where it is processed. If neither\
+            \ `model` nor the config's default model is set, the request is rejected\
+            \ with 400. When omitted, the request is served by platform-hosted Bedrock\
+            \ — this field is entirely additive."
       description: "Request body for `POST /v1/documents/{id}/ask`."
     RagSearchResult:
       required:
@@ -15075,6 +15290,7 @@ components:
     SearchResultsEvent:
       required:
       - event
+      - hasMore
       - results
       - searchTimeMs
       - totalResults
@@ -15120,6 +15336,10 @@ components:
             type: string
             description: "Which retrieval legs were unavailable: `text` (keyword)\
               \ and/or `vector` (semantic). Empty when retrieval was not degraded."
+        hasMore:
+          type: boolean
+          description: True when more matching results may exist than `results` returned
+            — raise `search.limit` (maximum 100) or narrow your filters.
       description: "Emitted by `POST /v1/rag` once the retrieval step completes, before\
         \ the answer streams. Reports the results that ground the answer."
     TruncationWarningEvent:
@@ -15185,15 +15405,22 @@ components:
       properties:
         query:
           type: string
-          description: The natural-language question to answer over your indexed content.
+          description: "The natural-language question to answer over your indexed\
+            \ content. Combined with `instructions`, must not exceed roughly 8,000\
+            \ tokens (~32K characters) — this field is a question, not a place for\
+            \ bulk context; large context belongs in your indexed content, retrieved\
+            \ via search."
         instructions:
           type: string
-          description: Optional system prompt that overrides the default. Defaults
-            to a generic instruction to answer using only the provided context.
+          description: "Optional system prompt that overrides the default. Defaults\
+            \ to a generic instruction to answer using only the provided context.\
+            \ Combined with `query`, must not exceed roughly 8,000 tokens (~32K characters)."
         model:
           type: string
           description: "Model alias to use, from the list returned by `GET /v1/models`.\
-            \ Defaults to `claude-haiku-4-5`."
+            \ Defaults to `claude-haiku-4-5`. When `providerAlias` is set, this instead\
+            \ names the MODEL on that BYO provider's own id space (opaque to Vectros)\
+            \ — falls back to the provider config's own default model when omitted."
         search:
           $ref: "#/components/schemas/RagSearch"
         maxTokens:
@@ -15214,6 +15441,19 @@ components:
             \ 403. When omitted, the request follows your account's default residency\
             \ setting."
           example: false
+        providerAlias:
+          type: string
+          description: "Route this request through a BYO (bring-your-own) model provider\
+            \ config instead of platform-hosted Bedrock — the alias of a provider\
+            \ config your account has activated (a customer-supplied Anthropic key\
+            \ or OpenAI-compatible endpoint). Requires the corresponding risk waiver\
+            \ on your account; otherwise, or if the alias is unknown or inactive,\
+            \ the request is rejected with 403. The request is sent to the endpoint\
+            \ on that config: `allowGlobalRegion` and your residency settings do not\
+            \ apply, and the provider determines where it is processed. If neither\
+            \ `model` nor the config's default model is set, the request is rejected\
+            \ with 400. When omitted, the request is served by platform-hosted Bedrock\
+            \ — this field is entirely additive."
       description: Request body for `POST /v1/rag`.
     RagSearch:
       type: object
@@ -15230,7 +15470,8 @@ components:
         limit:
           type: integer
           description: Maximum number of results to retrieve before building the prompt.
-            Defaults to 10; the maximum is 50.
+            Defaults to 10; the maximum is 100. Values outside 1-100 are rejected
+            with a 400 (not silently clamped).
           format: int32
         filters:
           type: object

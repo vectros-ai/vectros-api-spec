@@ -3,7 +3,7 @@
 Vectros is the secure data, document, search, and AI back-end that developers
 build apps on — a typed data store, a document pipeline, hybrid search,
 citation-grounded retrieval, multi-tenant isolation, least-privilege access
-control, and an audited compliance posture, behind one coherent API. The same
+control, and tamper-evident audit history, behind one coherent API. The same
 typed model is reachable both app-natively (typed SDKs for TypeScript, Python, and
 Java; a forkable data-plane app and React toolkit) and agent-natively (an official
 MCP server), with a CLI for provisioning.
@@ -12,8 +12,8 @@ The current surface spans: Documents and structured Records (with schema-defined
 indexing, lookup/range queries, and folders), hybrid Search (BM25 + vector, RRF
 fusion), grounded inference (chat, RAG, document-ask, model catalog), the
 Identity plane (users, plus identity entities in any namespace — `org` and
-`client` are reserved names, and you register any namespace before use), per-customer isolation
-with scoped keys and app-contexts, read-access logging, GDPR erasure and export,
+`client` are reserved names, and you register any namespace before use), isolation
+with scoped keys and app-contexts, read-access logging,
 and billing/usage reporting.
 
 ## Recommended integration paths
@@ -230,12 +230,54 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 
 ## Trust, isolation & compliance
 
-- Every data-plane resource is partitioned by an auth-derived context that fails
-  closed — lookups never cross a context boundary.
+- Every data-plane resource is partitioned by an auth-derived context: lookups
+  never cross a context boundary, and an unauthorized one returns nothing, not
+  everything.
 - Sensitive fields are destroyed at write time and kept out of the search index;
   read-time masking applies unless a caller is explicitly scoped to reveal.
-- Read-access logging, GDPR-style erasure and export, and per-customer
-  hard-delete are first-class operations.
+- Per-tenant hard-delete is a first-class operation.
+- Read-access logging records who read which subject's records, documents, identities, search
+  results and AI answers: the caller, the time, the subject and the record, as metadata only, never
+  the content. Turn it on per context or per schema (off by default) and query it through the API by
+  subject, record, caller or context.
+- **End-subject erasure requests are live.** `POST /v1/erasure-requests` (root API key only; a
+  scoped credential gets 403) erases one subject: `subjectType` is `user` or an identity namespace
+  such as `org` or `client`, identified by `subjectId` or `externalId`. Omit `contextScope`, or leave it
+  empty, to sweep every context in the account. A partial `contextScope` bounds only the data sweeps: the
+  subject's identity row (and, for a `user`, its access profiles) is deleted across the whole
+  account, after which the subject cannot be resolved for a second request. It is asynchronous and
+  can take many minutes: poll `GET /v1/erasure-requests/{id}` until `status` is `completed` or
+  `failed`. A `failed` request can leave the erasure partial, and because the subject's identity may
+  already be deleted it cannot simply be resubmitted.
+- It deletes the records, documents, folders and schemas the subject solely owns. Rows shared with
+  another owner are kept and counted as `sharedRowsSkipped` (for a `user`, any row that carries
+  another owner scope is kept). The response's certificate is a completion report: the contexts
+  swept, per-context counts of records, documents, folders and identity rows deleted,
+  `sharedRowsSkipped`, and `danglingReferences` (schema `reference` fields only, counted before
+  the sweep; a count of 0 does not prove nothing references the subject). Treat `sharedRowsSkipped` and the identity-row counts as approximate. The
+  certificate does not report schemas, access profiles, audit purge, the search index, S3 or
+  backups. Read-access log rows, scoped keys and
+  invitations are not erased.
+- `auditDisposition` governs version history. `retain-redacted` (the default) keeps prior versions
+  with only the fields declared sensitive redacted, so personal data in other fields stays in
+  history. `purge` removes the version-history rows for `user`, `org` and `client` subjects and
+  ignores your compliance-retention setting; larger audit payloads that were externalized to the
+  retention-locked audit store are not deleted by it. For a subject in a custom namespace the
+  request is accepted but the audit-history purge is not performed and the audit trail is
+  retained; the certificate does not reflect that, because its `auditDisposition` echoes your
+  request.
+- An erased subject can remain in recovery backups for a bounded window whose contractual ceiling
+  is set out in the Business Associate Agreement. Our Business Associate Agreement requires that a
+  restore re-applies pending erasures before the restored data serves production traffic; this is
+  performed as a documented manual procedure.
+- Erasure is not tenant decommissioning, which is a separate confirm-gated cascade. The data
+  export routes (`/v1/admin/export`) are reserved and return 501.
+
+## Evaluating Vectros
+
+- **Why it exists:** https://vectros.ai/why/
+- **Claims and where to check each one:** https://vectros.ai/evaluate.txt
+  (the same content as a page: https://vectros.ai/evaluate/)
 
 ## Documentation & Full Specification
 
