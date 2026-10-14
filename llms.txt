@@ -106,14 +106,14 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      (`POST /v1/entities/{namespace}`). `org` and `client` are reserved
      namespace names — so an organization is `POST /v1/entities/org`. There
      are no `/v1/orgs` or `/v1/clients` routes. **Register both explicitly
-     before use** (root key, same shape as registering your own namespace
+     before use** (root key or the CLI's bootstrap credential, same shape as registering your own namespace
      below, e.g. `{"namespace":"org","entityBacked":true,"specificityRank":1000}`
      and `client` at `specificityRank:2000`); `POST /v1/entities/org`/`client`
      returns `400` until you do. A one-time step per account; once
      registered, both work identically to any other namespace.
    - Register your own namespaces (`team`, `project`, …) with
      `POST /v1/namespaces` (`{"namespace":"team","entityBacked":true,"specificityRank":10}`,
-     root key only). `specificityRank` is a required, account-unique integer position
+     root key, or the CLI's bootstrap credential). `specificityRank` is a required, account-unique integer position
      in your specificity order (breaks a tie when a caller holds two scope
      dimensions at once) — leave headroom (`10`, `20`, `30`, …) between values.
      `entityBacked` defaults to `false` — a false/unregistered namespace
@@ -130,7 +130,8 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      namespace, rejected for a tenant-wide one.
    - **Idempotency:** both require an `externalId`. POSTing with an existing
      `externalId` safely returns the existing record — no 409 Conflict, safe to
-     retry. Pass `?upsert=true` on an entity create to overwrite instead — that
+     retry (an entity create answers `400` "already in use" instead when the credential lacks
+     `entities:r:<namespace>`, since returning the row would be a read). Pass `?upsert=true` on an entity create to overwrite instead — that
      needs `entities:u:<namespace>` in addition to `entities:c:<namespace>`.
 
 6. **Ownership is `scopes`, not `orgId`/`clientId`:**
@@ -181,8 +182,9 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
    - List, lookup, and version endpoints return a uniform cursor-paginated
      envelope: `{ data, nextCursor }`. Pass `nextCursor` back as the `startFrom`
      query param to fetch the next page; `null` means no more pages.
-   - Two endpoints are NOT enveloped: `POST /v1/search` (read `results`) and
-     `GET /v1/usage` (returns its payload directly). Search paging uses its own
+   - These endpoints are NOT enveloped: `POST /v1/search` (read `results`),
+     `GET /v1/usage` (returns its payload directly), `GET /v1/models` (returns `models` and
+     `defaultModel`) and `GET /v1/admin/logs` (returns `entries`). Search paging uses its own
      `limit` (1–100) plus an explicit `hasMore` boolean on the response — true
      when more results exist past this page. `totalResults` is an approximate
      matching-pool size, not a reliable paging signal; use `hasMore` instead.
@@ -230,11 +232,11 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 
 ## Trust, isolation & compliance
 
-- Every data-plane resource is partitioned by an auth-derived context: lookups
-  never cross a context boundary, and an unauthorized one returns nothing, not
-  everything.
-- Sensitive fields are destroyed at write time and kept out of the search index;
-  read-time masking applies unless a caller is explicitly scoped to reveal.
+- Every data-plane resource is partitioned by an auth-derived context: a lookup by a
+  credential confined to one context never crosses that boundary, and an unauthorized one
+  returns nothing, not everything.
+- Sensitive fields are removed from version history at write time, kept out of the search
+  index, and masked on read unless a caller is explicitly scoped to reveal them.
 - Per-tenant hard-delete is a first-class operation.
 - Read-access logging records who read which subject's records, documents, identities, search
   results and AI answers: the caller, the time, the subject and the record, as metadata only, never
@@ -243,29 +245,32 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 - **End-subject erasure requests are live.** `POST /v1/erasure-requests` (root API key only; a
   scoped credential gets 403) erases one subject: `subjectType` is `user` or an identity namespace
   such as `org` or `client`, identified by `subjectId` or `externalId`. Omit `contextScope`, or leave it
-  empty, to sweep every context in the account. A partial `contextScope` bounds only the data sweeps: the
-  subject's identity row (and, for a `user`, its access profiles) is deleted across the whole
-  account, after which the subject cannot be resolved for a second request. It is asynchronous and
+  empty, to sweep every context in the account. A partial `contextScope` erases exactly the listed
+  contexts (for a `user`, including its access profiles there) and keeps the subject's identity and every
+  unlisted context; the certificate then carries `identityRetained: true`, so send further requests and
+  finish with one that has no `contextScope`. The exception is an entity that belongs to a single context
+  (a context-owned namespace): listing that context deletes it, and `identityRetained` is not set. It is asynchronous and
   can take many minutes: poll `GET /v1/erasure-requests/{id}` until `status` is `completed` or
-  `failed`. A `failed` request can leave the erasure partial, and because the subject's identity may
-  already be deleted it cannot simply be resubmitted.
+  `failed`. A `failed` request can leave the erasure partial. A failure before the identity is deleted
+  leaves the subject in place, and the request can be resubmitted (it is idempotent); a failure of the
+  last step, removing the subject's own identity history after the identity is deleted, cannot be
+  resubmitted, so contact Vectros support.
 - It deletes the records, documents, folders and schemas the subject solely owns. Rows shared with
   another owner are kept and counted as `sharedRowsSkipped` (for a `user`, any row that carries
   another owner scope is kept). The response's certificate is a completion report: the contexts
   swept, per-context counts of records, documents, folders and identity rows deleted,
-  `sharedRowsSkipped`, and `danglingReferences` (schema `reference` fields only, counted before
-  the sweep; a count of 0 does not prove nothing references the subject). Treat `sharedRowsSkipped` and the identity-row counts as approximate. The
+  `sharedRowsSkipped`, and `danglingReferences` (schema `reference` fields with a reverse index only,
+  counted before the sweep; a count of 0 does not prove nothing references the subject). Treat `sharedRowsSkipped` and the identity-row counts as approximate. The
   certificate does not report schemas, access profiles, audit purge, the search index, S3 or
   backups. Read-access log rows, scoped keys and
   invitations are not erased.
 - `auditDisposition` governs version history. `retain-redacted` (the default) keeps prior versions
   with only the fields declared sensitive redacted, so personal data in other fields stays in
-  history. `purge` removes the version-history rows for `user`, `org` and `client` subjects and
-  ignores your compliance-retention setting; larger audit payloads that were externalized to the
-  retention-locked audit store are not deleted by it. For a subject in a custom namespace the
-  request is accepted but the audit-history purge is not performed and the audit trail is
-  retained; the certificate does not reflect that, because its `auditDisposition` echoes your
-  request.
+  history. `purge` removes the version-history rows for `user`, `org` and `client` subjects, and the
+  larger audit payloads held in the retention-locked audit store for those rows (deleted
+  asynchronously, shortly after the request completes), and ignores your compliance-retention
+  setting. A subject in a custom namespace cannot be purged: the request is refused with `400`
+  before anything is erased, and `retain-redacted` is what you get.
 - An erased subject can remain in recovery backups for a bounded window whose contractual ceiling
   is set out in the Business Associate Agreement. Our Business Associate Agreement requires that a
   restore re-applies pending erasures before the restored data serves production traffic; this is

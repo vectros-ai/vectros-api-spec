@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.46.0"
+  version: "0.47.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -3653,16 +3653,16 @@ paths:
       tags:
       - Inference
       summary: List available inference models
-      description: "Returns every inference model available to you, including each\
-        \ model's context window, the plan tiers it's available on, and the exact\
-        \ credit rates charged per 1K input and output tokens. Use this to populate\
-        \ model pickers and to validate a request before calling `/v1/chat`, `/v1/rag`,\
-        \ or `/v1/documents/{id}/ask`."
+      description: "Returns the whole platform model catalog, whatever your plan:\
+        \ `availableOn` names each model's plan tiers. Each entry also carries the\
+        \ context window and the exact credit rates charged per 1K input and output\
+        \ tokens. A model reached through a `providerAlias` is not listed. Use this\
+        \ to populate model pickers and to validate a request before calling `/v1/chat`,\
+        \ `/v1/rag`, or `/v1/documents/{id}/ask`."
       operationId: listInferenceModels
       responses:
         "200":
-          description: "The catalog of available inference models, with the default\
-            \ model alias."
+          description: "The model catalog, with the default model alias."
           content:
             application/json:
               schema:
@@ -5951,6 +5951,10 @@ paths:
           description: "Your API key or token lacks the `users:c` scope required to\
             \ create a user (or, with `?upsert=true`, the `users:u` scope required\
             \ to overwrite it)."
+        "409":
+          description: "With `?upsert=true`: another write deleted or kept changing\
+            \ the user while it was updated (`errorCode` `VERSION_CONFLICT`). Send\
+            \ the request again."
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -6060,6 +6064,9 @@ paths:
           description: No user with the given ID exists in your account. A context-confined
             credential also sees this when the user exists but holds no access profile
             in the credential's own app context — indistinguishable from not existing.
+        "409":
+          description: Another write kept changing the user while it was updated (`errorCode`
+            `VERSION_CONFLICT`). Send the request again.
         "429":
           description: You have exceeded the per-minute request limit for your plan. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your plan's limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -6980,14 +6987,16 @@ paths:
         required: true
       responses:
         "200":
-          description: Server-Sent Events stream of `content_delta` chunks followed
-            by a terminal `done` event.
+          description: "Server-Sent Events stream of `content_delta` chunks, ending\
+            \ with `done` or, if the call fails after the stream opens, `error`."
           content:
             text/event-stream:
               schema:
                 $ref: "#/components/schemas/ChatStreamEvent"
         "400":
-          description: The request body is malformed or invalid.
+          description: The request body is malformed or invalid; the conversation
+            ends with an `assistant` message and the model refuses one (see `messages`);
+            or it exceeds the model's context window (`errorCode` `CONTEXT_WINDOW_EXCEEDED`).
         "401":
           description: The API key or bearer token is missing or invalid.
         "402":
@@ -6996,7 +7005,12 @@ paths:
             \ not available on your plan."
         "403":
           description: "Requested global region without a waiver, OR `providerAlias`\
-            \ names a config you lack or aren't waived for."
+            \ is unknown, inactive, not waived, has an unsupported billing mode, or\
+            \ lacks the attestation `providerAlias` describes."
+        "404":
+          description: The credential's app context is being deleted.
+        "413":
+          description: The request body exceeds 1 MiB.
         "429":
           description: "You have exceeded the per-minute rate limit for your plan.\
             \ Read the `Retry-After` response header for the number of seconds to\
@@ -7026,7 +7040,8 @@ paths:
       responses:
         "200":
           description: "Server-Sent Events stream in this order: a `document_context`\
-            \ event, one or more `content_delta` chunks, then a terminal `done` event."
+            \ event, one or more `content_delta` chunks, then `done`; an `error` event\
+            \ ends the stream instead if the call fails after it opens."
           content:
             text/event-stream:
               schema:
@@ -7042,16 +7057,18 @@ paths:
             \ not available on your plan."
         "403":
           description: "Requested global region without a waiver, OR `providerAlias`\
-            \ names a config you lack or aren't waived for."
+            \ is unknown, inactive, not waived, has an unsupported billing mode, or\
+            \ lacks the attestation `providerAlias` describes."
         "404":
-          description: No document with the given id exists in your account.
+          description: "No document with the given id exists in your account, or the\
+            \ credential's app context is being deleted."
         "409":
           description: "The document is still processing, failed to process, or its\
             \ text is not retained — it was uploaded with `storeText=false`, which\
             \ discards the extracted text after indexing — so it cannot be interrogated."
         "413":
-          description: The document exceeds the 32K-token cap. Use `POST /v1/rag`
-            instead.
+          description: "The request body exceeds 1 MiB, or the document exceeds the\
+            \ 32K-token cap (use `POST /v1/rag`)."
         "429":
           description: "You have exceeded the per-minute rate limit for your plan.\
             \ Read the `Retry-After` response header for the number of seconds to\
@@ -7085,7 +7102,8 @@ paths:
         "200":
           description: "Server-Sent Events stream in this order: a `search_results`\
             \ event, an optional `truncation_warning`, one or more `content_delta`\
-            \ chunks, then a terminal `done` event."
+            \ chunks, then `done`; an `error` event ends the stream instead if the\
+            \ call fails after it opens."
           content:
             text/event-stream:
               schema:
@@ -7101,7 +7119,12 @@ paths:
             \ not available on your plan."
         "403":
           description: "Requested global region without a waiver, OR `providerAlias`\
-            \ names a config you lack or aren't waived for."
+            \ is unknown, inactive, not waived, has an unsupported billing mode, or\
+            \ lacks the attestation `providerAlias` describes."
+        "404":
+          description: The credential's app context is being deleted.
+        "413":
+          description: The request body exceeds 8 KB.
         "429":
           description: "You have exceeded the per-minute rate limit for your plan.\
             \ Read the `Retry-After` response header for the number of seconds to\
@@ -7313,6 +7336,20 @@ components:
             \ always null. When implemented, it will record the basis for the access\
             \ (e.g. treatment, payment, operations, or an external disclosure)."
           example: treatment
+        destinationAlias:
+          type: string
+          description: "For a disclosure into a model call that you routed to your\
+            \ own model provider (a `providerAlias` request): the alias of the provider\
+            \ configuration the call was sent through. It is recorded when the content\
+            \ is disclosed to the call, before the provider answers. Null for every\
+            \ other read."
+          example: my-anthropic-key
+        destinationHost:
+          type: string
+          description: "For a disclosure into a routed model call: the host of the\
+            \ endpoint address the call is sent to, as saved on the provider configuration\
+            \ when the call was made (host only, no path). Null for every other read."
+          example: api.anthropic.com
         createdAt:
           type: string
           description: When the read occurred / the row was recorded (ISO-8601 UTC).
@@ -11538,6 +11575,33 @@ components:
             \ is checked against the issuer's own published key set, then discarded\
             \ — it is never stored or used to sign anyone in."
       description: Request body for verifying a registered issuer.
+    LongContextPricing:
+      required:
+      - base
+      - multiplier
+      - promptTokensOver
+      - us
+      type: object
+      properties:
+        promptTokensOver:
+          type: integer
+          description: A request whose prompt is longer than this many tokens is charged
+            these rates.
+          format: int32
+          example: 100000
+        multiplier:
+          type: number
+          description: How many times the standard rates these rates are (applied
+            to input and output alike).
+          format: double
+          example: 5.0
+        base:
+          $ref: "#/components/schemas/RegionRates"
+        us:
+          $ref: "#/components/schemas/RegionRates"
+      description: "The second rate card of a model priced by prompt length: the credit\
+        \ rates (per 1K tokens) charged for EVERY token of a request whose prompt\
+        \ is longer than `promptTokensOver` tokens."
     ModelInfo:
       required:
       - availableOn
@@ -11579,22 +11643,28 @@ components:
               \ free, starter, pro, scale, enterprise)."
         inputCreditsPer1kTokens:
           type: number
-          description: Base (non-US) credit rate per 1K input tokens; 1 credit = 1
-            cent. Requests are served from a US region by default and billed `regionPricing.us`
-            (this value multiplied by `regionPremiumFactor`). See `regionPricing`
-            for both the US and base rates.
+          description: "Base (non-US) credit rate per 1K input tokens; 1 credit =\
+            \ 1 cent. Requests are served from a US region by default and billed `regionPricing.us`\
+            \ (this value multiplied by `regionPremiumFactor`). See `regionPricing`\
+            \ for both the US and base rates. For a model that has `longContext` pricing,\
+            \ this is the rate for a prompt of up to `longContext.promptTokensOver`\
+            \ tokens."
           format: double
           example: 0.1
         outputCreditsPer1kTokens:
           type: number
-          description: Base (non-US) credit rate per 1K output tokens; 1 credit =
-            1 cent. The default US-served rate is this value multiplied by `regionPremiumFactor`;
-            see `regionPricing` for both rates.
+          description: "Base (non-US) credit rate per 1K output tokens; 1 credit =\
+            \ 1 cent. The default US-served rate is this value multiplied by `regionPremiumFactor`;\
+            \ see `regionPricing` for both rates. For a model that has `longContext`\
+            \ pricing, this is the rate for a prompt of up to `longContext.promptTokensOver`\
+            \ tokens."
           format: double
           example: 0.5
         regionPricing:
           $ref: "#/components/schemas/RegionPricing"
-      description: The available inference models.
+        longContext:
+          $ref: "#/components/schemas/LongContextPricing"
+      description: The models in the platform catalog.
     ModelsResponse:
       required:
       - defaultModel
@@ -11603,14 +11673,16 @@ components:
       properties:
         models:
           type: array
-          description: The available inference models.
+          description: The models in the platform catalog.
           items:
             $ref: "#/components/schemas/ModelInfo"
         defaultModel:
           type: string
-          description: Model alias used when a request omits the `model` field.
-          example: claude-haiku-4-5
-      description: The list of available inference models plus the default model alias.
+          description: "Model alias used when a request omits the `model` field. It\
+            \ is `claude-haiku-5-5`. `claude-haiku-4-5` remains available: name it\
+            \ to use that model."
+          example: claude-haiku-5-5
+      description: The platform model catalog plus the default model alias.
     RegionPricing:
       required:
       - base
@@ -14924,9 +14996,13 @@ components:
         \ or null when no more pages remain."
     ChatStreamEvent:
       type: object
-      description: A single Server-Sent Event from `POST /v1/chat`. The `type` field
-        discriminates which event type this is (the `event` field carries the same
-        value for backward compatibility).
+      description: "A single Server-Sent Event from `POST /v1/chat`. The `type` field\
+        \ discriminates which event type this is (the `event` field carries the same\
+        \ value for backward compatibility). The stream may also carry Server-Sent\
+        \ Events comment lines (a line that starts with a colon, such as `: keepalive`):\
+        \ one as the stream opens and then about every 15 seconds while the model\
+        \ is working. A stream parser you write yourself must skip them. None follows\
+        \ the terminal `done` or `error` event."
       discriminator:
         propertyName: type
       oneOf:
@@ -15059,7 +15135,13 @@ components:
           description: The text content of the message.
       description: "The conversation history, in order. A message with role `system`\
         \ is extracted and used as the system prompt; `user` and `assistant` messages\
-        \ are sent to the model as conversation turns."
+        \ are sent to the model as conversation turns. A conversation that ends with\
+        \ an `assistant` message is refused with a 400 for a model that does not accept\
+        \ a prefill (currently `claude-haiku-5-5`, `claude-sonnet-5`, `claude-sonnet-5-5`\
+        \ and `claude-opus-5-5`): end with a `user` message, or name `claude-haiku-4-5`.\
+        \ A conversation that, with `maxTokens`, cannot fit the model's context window\
+        \ is refused with a 400 and `errorCode` `CONTEXT_WINDOW_EXCEEDED` (the check\
+        \ is an estimate). A call routed through `providerAlias` is subject to neither."
     ChatRequest:
       required:
       - messages
@@ -15069,13 +15151,21 @@ components:
           type: array
           description: "The conversation history, in order. A message with role `system`\
             \ is extracted and used as the system prompt; `user` and `assistant` messages\
-            \ are sent to the model as conversation turns."
+            \ are sent to the model as conversation turns. A conversation that ends\
+            \ with an `assistant` message is refused with a 400 for a model that does\
+            \ not accept a prefill (currently `claude-haiku-5-5`, `claude-sonnet-5`,\
+            \ `claude-sonnet-5-5` and `claude-opus-5-5`): end with a `user` message,\
+            \ or name `claude-haiku-4-5`. A conversation that, with `maxTokens`, cannot\
+            \ fit the model's context window is refused with a 400 and `errorCode`\
+            \ `CONTEXT_WINDOW_EXCEEDED` (the check is an estimate). A call routed\
+            \ through `providerAlias` is subject to neither."
           items:
             $ref: "#/components/schemas/ChatMessage"
         model:
           type: string
           description: "Model alias to use, from the list returned by `GET /v1/models`.\
-            \ Defaults to `claude-haiku-4-5`. When `providerAlias` is set, this instead\
+            \ Defaults to `claude-haiku-5-5`. `claude-haiku-4-5` remains available:\
+            \ name it to use that model. When `providerAlias` is set, this instead\
             \ names the MODEL on that BYO provider's own id space (opaque to Vectros)\
             \ — falls back to the provider config's own default model when omitted."
         maxTokens:
@@ -15086,12 +15176,15 @@ components:
         temperature:
           type: number
           description: "Sampling temperature, between 0.0 and 1.0. Higher values produce\
-            \ more varied output. Defaults to 0.7."
+            \ more varied output. Defaults to 0.7. Ignored for a model that does not\
+            \ accept sampling settings (currently `claude-haiku-5-5`, `claude-sonnet-5`,\
+            \ `claude-sonnet-5-5` and `claude-opus-5-5`), which then samples at its\
+            \ own default."
           format: float
         topP:
           type: number
-          description: Top-p (nucleus) sampling. Ignored when `temperature` is greater
-            than 0.
+          description: "Top-p (nucleus) sampling. Ignored when `temperature` is greater\
+            \ than 0, and for a model that does not accept sampling settings."
           format: float
         allowGlobalRegion:
           type: boolean
@@ -15108,19 +15201,25 @@ components:
             \ config instead of platform-hosted Bedrock — the alias of a provider\
             \ config your account has activated (a customer-supplied Anthropic key\
             \ or OpenAI-compatible endpoint). Requires the corresponding risk waiver\
-            \ on your account; otherwise, or if the alias is unknown or inactive,\
-            \ the request is rejected with 403. The request is sent to the endpoint\
-            \ on that config: `allowGlobalRegion` and your residency settings do not\
-            \ apply, and the provider determines where it is processed. If neither\
-            \ `model` nor the config's default model is set, the request is rejected\
-            \ with 400. When omitted, the request is served by platform-hosted Bedrock\
-            \ — this field is entirely additive."
+            \ on your account and, if the account has accepted the Business Associate\
+            \ Agreement in the developer portal (or Vectros cannot establish whether\
+            \ it has), a current attestation on that provider config; otherwise, or\
+            \ if the alias is unknown or inactive, the request is rejected with 403.\
+            \ The request is sent to the endpoint on that config: `allowGlobalRegion`\
+            \ and your residency settings do not apply, and the provider determines\
+            \ where it is processed. If neither `model` nor the config's default model\
+            \ is set, the request is rejected with 400. When omitted, the request\
+            \ is served by platform-hosted Bedrock — this field is entirely additive."
       description: Request body for `POST /v1/chat`.
     DocumentAskStreamEvent:
       type: object
       description: "A single Server-Sent Event from `POST /v1/documents/{id}/ask`.\
         \ The `type` field discriminates which event type this is (the `event` field\
-        \ carries the same value for backward compatibility)."
+        \ carries the same value for backward compatibility). The stream may also\
+        \ carry Server-Sent Events comment lines (a line that starts with a colon,\
+        \ such as `: keepalive`): one as the stream opens and then about every 15\
+        \ seconds while the model is working. A stream parser you write yourself must\
+        \ skip them. None follows the terminal `done` or `error` event."
       discriminator:
         propertyName: type
       oneOf:
@@ -15177,7 +15276,8 @@ components:
         model:
           type: string
           description: "Model alias to use, from the list returned by `GET /v1/models`.\
-            \ Defaults to `claude-haiku-4-5`. When `providerAlias` is set, this instead\
+            \ Defaults to `claude-haiku-5-5`. `claude-haiku-4-5` remains available:\
+            \ name it to use that model. When `providerAlias` is set, this instead\
             \ names the MODEL on that BYO provider's own id space (opaque to Vectros)\
             \ — falls back to the provider config's own default model when omitted."
         maxTokens:
@@ -15187,7 +15287,10 @@ components:
           format: int32
         temperature:
           type: number
-          description: Sampling temperature. Defaults to 0.2.
+          description: "Sampling temperature. Defaults to 0.2. Ignored for a model\
+            \ that does not accept sampling settings (currently `claude-haiku-5-5`,\
+            \ `claude-sonnet-5`, `claude-sonnet-5-5` and `claude-opus-5-5`), which\
+            \ then samples at its own default."
           format: float
         allowGlobalRegion:
           type: boolean
@@ -15203,13 +15306,15 @@ components:
             \ config instead of platform-hosted Bedrock — the alias of a provider\
             \ config your account has activated (a customer-supplied Anthropic key\
             \ or OpenAI-compatible endpoint). Requires the corresponding risk waiver\
-            \ on your account; otherwise, or if the alias is unknown or inactive,\
-            \ the request is rejected with 403. The request is sent to the endpoint\
-            \ on that config: `allowGlobalRegion` and your residency settings do not\
-            \ apply, and the provider determines where it is processed. If neither\
-            \ `model` nor the config's default model is set, the request is rejected\
-            \ with 400. When omitted, the request is served by platform-hosted Bedrock\
-            \ — this field is entirely additive."
+            \ on your account and, if the account has accepted the Business Associate\
+            \ Agreement in the developer portal (or Vectros cannot establish whether\
+            \ it has), a current attestation on that provider config; otherwise, or\
+            \ if the alias is unknown or inactive, the request is rejected with 403.\
+            \ The request is sent to the endpoint on that config: `allowGlobalRegion`\
+            \ and your residency settings do not apply, and the provider determines\
+            \ where it is processed. If neither `model` nor the config's default model\
+            \ is set, the request is rejected with 400. When omitted, the request\
+            \ is served by platform-hosted Bedrock — this field is entirely additive."
       description: "Request body for `POST /v1/documents/{id}/ask`."
     RagSearchResult:
       required:
@@ -15276,9 +15381,13 @@ components:
       description: A single result used to ground the answer.
     RagStreamEvent:
       type: object
-      description: A single Server-Sent Event from `POST /v1/rag`. The `type` field
-        discriminates which event type this is (the `event` field carries the same
-        value for backward compatibility).
+      description: "A single Server-Sent Event from `POST /v1/rag`. The `type` field\
+        \ discriminates which event type this is (the `event` field carries the same\
+        \ value for backward compatibility). The stream may also carry Server-Sent\
+        \ Events comment lines (a line that starts with a colon, such as `: keepalive`):\
+        \ one as the stream opens and then about every 15 seconds while the model\
+        \ is working. A stream parser you write yourself must skip them. None follows\
+        \ the terminal `done` or `error` event."
       discriminator:
         propertyName: type
       oneOf:
@@ -15406,19 +15515,21 @@ components:
         query:
           type: string
           description: "The natural-language question to answer over your indexed\
-            \ content. Combined with `instructions`, must not exceed roughly 8,000\
-            \ tokens (~32K characters) — this field is a question, not a place for\
+            \ content. The request body is limited to 8 KB (8,192 bytes); a larger\
+            \ body is refused with a 413. This field is a question, not a place for\
             \ bulk context; large context belongs in your indexed content, retrieved\
             \ via search."
         instructions:
           type: string
           description: "Optional system prompt that overrides the default. Defaults\
             \ to a generic instruction to answer using only the provided context.\
-            \ Combined with `query`, must not exceed roughly 8,000 tokens (~32K characters)."
+            \ The request body is limited to 8 KB (8,192 bytes); a larger body is\
+            \ refused with a 413."
         model:
           type: string
           description: "Model alias to use, from the list returned by `GET /v1/models`.\
-            \ Defaults to `claude-haiku-4-5`. When `providerAlias` is set, this instead\
+            \ Defaults to `claude-haiku-5-5`. `claude-haiku-4-5` remains available:\
+            \ name it to use that model. When `providerAlias` is set, this instead\
             \ names the MODEL on that BYO provider's own id space (opaque to Vectros)\
             \ — falls back to the provider config's own default model when omitted."
         search:
@@ -15431,7 +15542,10 @@ components:
         temperature:
           type: number
           description: "Sampling temperature. Defaults to 0.3, favoring more deterministic,\
-            \ retrieval-grounded answers."
+            \ retrieval-grounded answers. Ignored for a model that does not accept\
+            \ sampling settings (currently `claude-haiku-5-5`, `claude-sonnet-5`,\
+            \ `claude-sonnet-5-5` and `claude-opus-5-5`), which then samples at its\
+            \ own default."
           format: float
         allowGlobalRegion:
           type: boolean
@@ -15447,13 +15561,15 @@ components:
             \ config instead of platform-hosted Bedrock — the alias of a provider\
             \ config your account has activated (a customer-supplied Anthropic key\
             \ or OpenAI-compatible endpoint). Requires the corresponding risk waiver\
-            \ on your account; otherwise, or if the alias is unknown or inactive,\
-            \ the request is rejected with 403. The request is sent to the endpoint\
-            \ on that config: `allowGlobalRegion` and your residency settings do not\
-            \ apply, and the provider determines where it is processed. If neither\
-            \ `model` nor the config's default model is set, the request is rejected\
-            \ with 400. When omitted, the request is served by platform-hosted Bedrock\
-            \ — this field is entirely additive."
+            \ on your account and, if the account has accepted the Business Associate\
+            \ Agreement in the developer portal (or Vectros cannot establish whether\
+            \ it has), a current attestation on that provider config; otherwise, or\
+            \ if the alias is unknown or inactive, the request is rejected with 403.\
+            \ The request is sent to the endpoint on that config: `allowGlobalRegion`\
+            \ and your residency settings do not apply, and the provider determines\
+            \ where it is processed. If neither `model` nor the config's default model\
+            \ is set, the request is rejected with 400. When omitted, the request\
+            \ is served by platform-hosted Bedrock — this field is entirely additive."
       description: Request body for `POST /v1/rag`.
     RagSearch:
       type: object
