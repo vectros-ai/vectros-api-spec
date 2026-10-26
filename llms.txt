@@ -11,7 +11,7 @@ MCP server), with a CLI for provisioning.
 The current surface spans: Documents and structured Records (with schema-defined
 indexing, lookup/range queries, and folders), hybrid Search (BM25 + vector, RRF
 fusion), grounded inference (chat, RAG, document-ask, model catalog), the
-Identity plane (users, plus identity entities in any namespace — `org` and
+Scripts and trigger rules, webhooks, end-subject erasure, the Identity plane (users, plus identity entities in any namespace — `org` and
 `client` are reserved names, and you register any namespace before use), isolation
 with scoped keys and app-contexts, read-access logging,
 and billing/usage reporting.
@@ -25,7 +25,7 @@ Most integrations should NOT hand-roll HTTP. Reach for a client:
   that drives the API, so method names and types match it exactly. For TypeScript:
   `npm install @vectros-ai/sdk`, construct one client with a token and environment,
   then call sub-clients grouped by area (`records`, `schemas`, `documents`,
-  `folders`, `search`, `inference`, `identity`, `auth`).
+  `folders`, `search`, `inference`, `identity`, `auth`, `scripts`, `triggers`).
 - **CLI (`@vectros-ai/cli`, `vectros`)** — provision from a terminal or CI:
   blueprints, app-contexts, identities, scoped keys, and a one-command MCP
   credential bootstrap (`npx -y @vectros-ai/cli bootstrap`). No code, no handling
@@ -83,8 +83,8 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 
 2. **The File Upload Handshake (CRITICAL — never skip this):**
    - Files are NOT sent as multipart/form-data to the API.
-   - Step 1: `POST /v1/documents/upload` with filename and indexMode → get `uploadUrl`
-   - Step 2: HTTP PUT the raw file bytes directly to `uploadUrl`. If the response carries
+   - Step 1: `POST /v1/documents/upload` with `fileName` and `fileType` (and optionally `indexMode`) → get `uploadUrl`
+   - Step 2: HTTP PUT the raw file bytes directly to `uploadUrl`, with `Content-Type` set to the `fileType` you sent. If the response carries
      `requiredHeaderName`, send that header with the exact `requiredHeaderValue` on the PUT:
      it is part of the URL's signature, and a PUT without it is rejected with `403`.
    - The system indexes automatically after the PUT completes.
@@ -92,7 +92,8 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 3. **Hybrid Search (BM25 + Vector — RRF fusion):**
    - `POST /v1/search` fuses BM25 text scoring and semantic vector similarity via
      Reciprocal Rank Fusion (RRF). Always default to `mode: HYBRID`.
-   - For exact phrase matching, set `textMode: PHRASE`.
+   - In `HYBRID` mode the keyword leg matches phrases by default (`textMode: PHRASE`); for a long
+     natural-language query set `textMode: OR` so the keyword leg scores, or `AND` to require every term.
    - For broad semantic-only queries, set `mode: SEMANTIC`.
 
 4. **Context Hydration for LLMs (CRITICAL):**
@@ -129,7 +130,7 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      read, update, delete, versions, lookup): required for a context-owned
      namespace, rejected for a tenant-wide one.
    - **Idempotency:** both require an `externalId`. POSTing with an existing
-     `externalId` safely returns the existing record — no 409 Conflict, safe to
+     `externalId` safely returns the existing record — no 409 Conflict on a plain create, safe to
      retry (an entity create answers `400` "already in use" instead when the credential lacks
      `entities:r:<namespace>`, since returning the row would be a read). Pass `?upsert=true` on an entity create to overwrite instead — that
      needs `entities:u:<namespace>` in addition to `entities:c:<namespace>`.
@@ -203,7 +204,22 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      compare `execution.creditsMilli` against your account-wide figure rather than
      recomputing it from one context's `billableMillis`.
 
-9. **Named platform capabilities (`granted_capabilities`):**
+9. **Errors and retries:**
+   - An update that meets another change to the same item answers `409` with `errorCode`
+     `VERSION_CONFLICT`: a stale `expectedVersion`, or a write at the same moment even without
+     one. Nothing is written; re-read the item and retry. An update of an item deleted a moment
+     earlier answers `404`. A `POST /v1/entities/{namespace}?upsert=true` can answer `409` or `404` the same way.
+   - `DELETE /v1/schemas/{id}` answers `409` while records, documents, variants, trigger rules, users or
+     entities still use the schema.
+   - On `POST /v1/chat`, `POST /v1/rag` and `POST /v1/documents/{id}/ask`: `402` means the pre-paid
+     balance is short. `429` with `errorCode` `BALANCE_BUSY` and `503` with `BALANCE_UNAVAILABLE` (both
+     carry `Retry-After`) mean the balance step did not complete: do not top up, retry after the
+     delay. A request that names a `providerAlias` whose waiver is not in force answers `403` with
+     `errorCode` `WAIVER_NOT_SIGNED`, `WAIVER_TEXT_CHANGED` or `WAIVER_REVOKED`.
+   - Set `reasoning: "stream"` on those three routes to receive a reasoning model's reasoning as
+     `reasoning_delta` stream events before the answer; the default `"omit"` sends none.
+
+10. **Named platform capabilities (`granted_capabilities`):**
    - A scope clause (in a role, an access profile, or an invitation) accepts
      an optional `granted_capabilities` array alongside `allowed_actions` and
      `data_scope`. A capability grants a bounded, cross-context effect the
