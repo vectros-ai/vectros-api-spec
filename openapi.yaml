@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: Vectros API
   description: Hybrid search and semantic memory API. Ingest documents and structured records, search across all content with hybrid BM25 + semantic ranking, and manage users and identity entities.
-  version: "0.48.0"
+  version: "0.49.0"
   contact:
     name: Vectros Developer Support
     url: https://docs.vectros.ai
@@ -19,6 +19,8 @@ tags:
     description: Store versioned script source, and run a stored script synchronously as one atomic transaction
   - name: Triggers
     description: Declare rules that invoke a script version on a schema record event, asynchronously and under the rule's own grant
+  - name: Agents
+    description: Store versioned agent definitions, each a model, a system prompt, a tool whitelist and per-run limits
   - name: Folders
     description: Organize documents and records into folder hierarchies
   - name: Identity
@@ -451,6 +453,397 @@ paths:
           description: Your token lacks the `logs:r` scope.
       security:
         - BearerAuth: []
+  /v1/agents:
+
+    get:
+      tags:
+      - Agents
+      summary: List agents
+      description: "Returns a page of the agents in the app context, newest first,\
+        \ each at its latest version. A caller holding `runs:c` but not `agents:r`\
+        \ gets only each agent's `id`, `name`, `description`, `latestVersion` and\
+        \ `status`. Retired and purged agents are left out unless `includeRetired=true`.\
+        \ Requires `agents:r` or `runs:c`."
+      operationId: listAgents
+      parameters:
+      - name: contextId
+        in: query
+        description: The app context to act in. Only a credential that is not confined
+          to one app context (a root key) may name another context; a confined credential
+          naming a context other than its own gets `403`. Omit it to use your credential's
+          context (`default` for a root key).
+        schema:
+          type: string
+      - name: includeRetired
+        in: query
+        description: "When `true`, also return retired and purged agents."
+        schema:
+          type: boolean
+          default: false
+      - name: startFrom
+        in: query
+        description: "Pagination cursor: pass the `nextCursor` of the previous page;\
+          \ omit it for the first page. Opaque — echo it back unchanged."
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: "Maximum number of agents per page, 1-100; defaults to 20. A\
+          \ page of full definitions holds at most 20."
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+          format: int64
+          default: 20
+      responses:
+        "200":
+          description: A page of agents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentPage"
+        "403":
+          description: "Your credential holds neither `agents:r` nor `runs:c`, or\
+            \ names an app context other than its own."
+      security:
+        - BearerAuth: []
+    post:
+      tags:
+      - Agents
+      summary: Create an agent
+      description: "Stores a new agent at version 1, or returns the existing agent\
+        \ of this name unchanged. With `?upsert=true` an existing agent whose definition\
+        \ differs gets a new version instead. Requires the `agents:c` scope; with\
+        \ `?upsert=true` and an existing agent of that name it also requires `agents:u`."
+      operationId: createAgent
+      parameters:
+      - name: upsert
+        in: query
+        description: "When `true` and an agent of this name exists, write a new version\
+          \ if its definition differs (nothing is written if it is identical)."
+        schema:
+          type: boolean
+          default: false
+      - name: contextId
+        in: query
+        description: The app context to act in. Only a credential that is not confined
+          to one app context (a root key) may name another context; a confined credential
+          naming a context other than its own gets `403`. Omit it to use your credential's
+          context (`default` for a root key).
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentDefinitionRequest"
+        required: true
+      responses:
+        "201":
+          description: The agent was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentResponse"
+        "200":
+          description: "An agent of this name exists and was returned, or (with `?upsert=true`)\
+            \ given a new version."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentResponse"
+        "400":
+          description: "The definition is invalid: a malformed field, an unknown model,\
+            \ a model that agents cannot run on (errorCode `MODEL_NOT_SUPPORTED_IN_RUNS`),\
+            \ a tool that is not in the tool catalog or cannot be offered to a run,\
+            \ or a tool that changes data without `allowWrites` (a tool that leaves\
+            \ the platform, such as `web_fetch`, can be stored; whether a run may\
+            \ use it depends on your tenant's tool settings), or a budget below the\
+            \ minimum (errorCode `BUDGET_TOO_LOW`); or the name is in use by an agent\
+            \ you cannot read; or your credential's grant does not reach rows that\
+            \ have no owner; or the agent is managed by another blueprint."
+        "403":
+          description: "Your credential lacks the `agents:c` scope (or, with `?upsert=true`\
+            \ on an existing agent, the `agents:u` scope), or names an app context\
+            \ other than its own."
+        "409":
+          description: "An agent of this name is retired or purged (errorCode `AGENT_RETIRED`),\
+            \ or another request created it at the same time (errorCode `VERSION_CONFLICT`)."
+        "429":
+          description: You have exceeded the per-minute request limit for your account. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+  /v1/agents/{id}:
+
+    get:
+      tags:
+      - Agents
+      summary: Get an agent
+      description: "Returns the agent at its latest version, or at `version`. Requires\
+        \ the `agents:r` scope."
+      operationId: getAgent
+      parameters:
+      - name: contextId
+        in: query
+        description: The app context to act in. Only a credential that is not confined
+          to one app context (a root key) may name another context; a confined credential
+          naming a context other than its own gets `403`. Omit it to use your credential's
+          context (`default` for a root key).
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: query
+        description: The version to return; defaults to the latest.
+        schema:
+          minimum: 1
+          type: integer
+          format: int64
+      responses:
+        "200":
+          description: The agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentResponse"
+        "403":
+          description: "Your credential lacks the `agents:r` scope, or names an app\
+            \ context other than its own."
+        "404":
+          description: No agent (or no such version) with this id exists in the app
+            context.
+      security:
+        - BearerAuth: []
+    put:
+      tags:
+      - Agents
+      summary: Write a new version of an agent
+      description: Stores the body as the agent's next version. Earlier versions never
+        change. Every optional field you leave out takes its default; `model` is required.
+        With `?restore=true` a retired agent becomes active again with this version.
+        Requires the `agents:u` scope.
+      operationId: updateAgent
+      parameters:
+      - name: restore
+        in: query
+        description: "When `true`, restore a retired agent with this version. A purged\
+          \ agent cannot be restored."
+        schema:
+          type: boolean
+          default: false
+      - name: contextId
+        in: query
+        description: The app context to act in. Only a credential that is not confined
+          to one app context (a root key) may name another context; a confined credential
+          naming a context other than its own gets `403`. Omit it to use your credential's
+          context (`default` for a root key).
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentDefinitionRequest"
+        required: true
+      responses:
+        "200":
+          description: The new version was stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentResponse"
+        "400":
+          description: "The definition is invalid (see Create an agent), the body\
+            \ names a different agent, the agent is managed by another blueprint,\
+            \ or `restore=true` was given for an agent that is not retired."
+        "403":
+          description: "Your credential lacks the `agents:u` scope, or names an app\
+            \ context other than its own."
+        "404":
+          description: No agent with this id exists in the app context.
+        "409":
+          description: "The agent is retired or purged (errorCode `AGENT_RETIRED`),\
+            \ or it has a newer version than `expectedVersion` or changed while this\
+            \ request was applied (errorCode `VERSION_CONFLICT`). Nothing was written."
+        "429":
+          description: You have exceeded the per-minute request limit for your account. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+    delete:
+      tags:
+      - Agents
+      summary: Retire or purge an agent
+      description: "Retires the agent: its versions stay readable, it leaves the default\
+        \ listing, and it can be restored. With `?purge=true` a retired agent's content\
+        \ (every version's prompt, description, tools, model, limits and budget) is\
+        \ erased, leaving its id, name, version numbers and timestamps; its change\
+        \ history keeps only a one-way hash of the prompt, description and tools.\
+        \ If the agent is restored while a purge is running, the purge stops (409)\
+        \ and versions it already erased stay erased; purge it again after retiring\
+        \ it. With `?purge=true&version=N` one version that is not the latest is erased.\
+        \ The name of a purged agent stays reserved. Requires the `agents:d` scope."
+      operationId: deleteAgent
+      parameters:
+      - name: purge
+        in: query
+        description: "When `true`, erase content instead of retiring."
+        schema:
+          type: boolean
+          default: false
+      - name: version
+        in: query
+        description: "With `purge=true`: erase only this version, which must not be\
+          \ the latest."
+        schema:
+          minimum: 1
+          type: integer
+          format: int64
+      - name: contextId
+        in: query
+        description: The app context to act in. Only a credential that is not confined
+          to one app context (a root key) may name another context; a confined credential
+          naming a context other than its own gets `403`. Omit it to use your credential's
+          context (`default` for a root key).
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The agent is retired or purged (repeating the call changes
+            nothing).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentResponse"
+        "400":
+          description: '`version` was given without `purge=true`.'
+        "403":
+          description: "Your credential lacks the `agents:d` scope, or names an app\
+            \ context other than its own."
+        "404":
+          description: No agent (or no such version) with this id exists in the app
+            context.
+        "409":
+          description: "A purge of an agent that is not retired (errorCode `AGENT_NOT_RETIRED`),\
+            \ of its latest version (errorCode `AGENT_VERSION_IS_LATEST`), or a concurrent\
+            \ change (errorCode `VERSION_CONFLICT`)."
+        "429":
+          description: You have exceeded the per-minute request limit for your account. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+  /v1/agents/{id}/versions:
+
+    get:
+      tags:
+      - Agents
+      summary: List an agent's versions
+      description: "Returns a page of the agent's versions, newest first: who wrote\
+        \ each and when, and whether it was purged. With `includeContent=true` each\
+        \ entry carries its full definition. Requires the `agents:r` scope."
+      operationId: listAgentVersions
+      parameters:
+      - name: contextId
+        in: query
+        description: The app context to act in. Only a credential that is not confined
+          to one app context (a root key) may name another context; a confined credential
+          naming a context other than its own gets `403`. Omit it to use your credential's
+          context (`default` for a root key).
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: includeContent
+        in: query
+        description: "When `true`, each entry carries its full definition."
+        schema:
+          type: boolean
+          default: false
+      - name: startFrom
+        in: query
+        description: "Pagination cursor: pass the `nextCursor` of the previous page;\
+          \ omit it for the first page. Opaque — echo it back unchanged."
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: "Maximum number of versions per page, 1-100; defaults to 20.\
+          \ With `includeContent=true` a page holds at most 20."
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+          format: int64
+          default: 20
+      responses:
+        "200":
+          description: A page of versions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentPage"
+        "403":
+          description: "Your credential lacks the `agents:r` scope, or names an app\
+            \ context other than its own."
+        "404":
+          description: No agent with this id exists in the app context.
+      security:
+        - BearerAuth: []
   /v1/app-contexts/{contextId}/profiles:
 
     get:
@@ -576,7 +969,11 @@ paths:
           description: "No app context exists with this contextId, or it is being\
             \ deleted."
         "403":
-          description: Not authorized.
+          description: "Not authorized; with `?upsert=true`, also returned when the\
+            \ existing profile belongs to the account owner and your credential is\
+            \ not the owner's (only the account's root API key, or a scoped API key\
+            \ bound to the account owner and not created by delegation from another\
+            \ key, may overwrite it; a scoped token never counts as the owner)."
         "409":
           description: "With `?upsert=true`: version conflict (errorCode `VERSION_CONFLICT`):\
             \ another write to the same access profile committed while this request\
@@ -924,7 +1321,11 @@ paths:
           description: No access profile exists with this principalId in the given
             context.
         "403":
-          description: Not authorized.
+          description: "Not authorized; also returned when the profile belongs to\
+            \ the account owner and your credential is not the owner's (only the account's\
+            \ root API key, or a scoped API key bound to the account owner and not\
+            \ created by delegation from another key, may change or delete it; a scoped\
+            \ token never counts as the owner)."
         "409":
           description: "Version conflict (errorCode `VERSION_CONFLICT`): another write\
             \ to the same access profile committed while this request was being applied,\
@@ -979,7 +1380,11 @@ paths:
           description: The access profile kept changing while it was being deleted
             (`errorCode` `VERSION_CONFLICT`). Nothing was deleted; retry the request.
         "403":
-          description: Not authorized.
+          description: "Not authorized; also returned when the profile belongs to\
+            \ the account owner and your credential is not the owner's (only the account's\
+            \ root API key, or a scoped API key bound to the account owner and not\
+            \ created by delegation from another key, may change or delete it; a scoped\
+            \ token never counts as the owner)."
         "429":
           description: You have exceeded the per-minute request limit for your account. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -1446,9 +1851,11 @@ paths:
       - Documents
       summary: List documents
       description: "Returns a paginated list of your documents, optionally filtered\
-        \ by folder (`folderId`) and/or owner (`userId` or `scope`). The response\
-        \ is a `{data, nextCursor}` envelope; pass `nextCursor` back as `startFrom`\
-        \ to fetch the next page. Requires the `documents:r` scope."
+        \ by folder (`folderId`), owner (`userId` or `scope`) and/or type (`type`).\
+        \ The response is a `{data, nextCursor}` envelope; pass `nextCursor` back\
+        \ as `startFrom` to fetch the next page. A page can hold fewer documents than\
+        \ `limit`, or none, while `nextCursor` is still set: keep paging until `nextCursor`\
+        \ is null. Requires the `documents:r` scope."
       operationId: listDocuments
       parameters:
       - name: userId
@@ -1474,14 +1881,30 @@ paths:
         schema:
           type: string
         example: f47ac10b-58cc-4372-a567-0e02b2c3d479
+      - name: type
+        in: query
+        description: "List only documents of this type: the record type of the schema\
+          \ the document is bound to (the `typeName` that `GET /v1/schemas` shows).\
+          \ Documents with no schema never match. Can be combined with the other filters.\
+          \ 1 to 64 letters, digits, `_` or `-`: anything else is a `400`, and an\
+          \ empty value means no filter. The filter applies to each page as it is\
+          \ read, so pages can be short or empty until the listing is exhausted; to\
+          \ find documents of a type across a large collection, `POST /v1/search`\
+          \ with `typeName` is indexed."
+        schema:
+          type: string
+        example: investigation_report
       - name: startFrom
         in: query
         description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
           \ page to fetch the next page; omit it for the first page. The cursor is\
           \ **opaque** — echo it back unchanged, and do not parse it or construct\
-          \ one. Keep every other query parameter identical while paging: a cursor\
-          \ is valid only for the exact query that returned it, and reusing one against\
-          \ a different query is rejected with a 400."
+          \ one. Keep every other query parameter identical while paging. A cursor\
+          \ is checked against the part of the query that decides where the listing\
+          \ reads, so reusing it with, for example, a different folder or owner is\
+          \ refused with a 400; not every change to the other parameters is detected,\
+          \ though, and a cursor reused after one returns pages that match neither\
+          \ query."
         schema:
           type: string
         example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
@@ -1934,9 +2357,12 @@ paths:
         description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
           \ page to fetch the next page; omit it for the first page. The cursor is\
           \ **opaque** — echo it back unchanged, and do not parse it or construct\
-          \ one. Keep every other query parameter identical while paging: a cursor\
-          \ is valid only for the exact query that returned it, and reusing one against\
-          \ a different query is rejected with a 400."
+          \ one. Keep every other query parameter identical while paging. A cursor\
+          \ is checked against the part of the query that decides where the listing\
+          \ reads, so reusing it with, for example, a different folder or owner is\
+          \ refused with a 400; not every change to the other parameters is detected,\
+          \ though, and a cursor reused after one returns pages that match neither\
+          \ query."
         schema:
           type: string
         example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
@@ -2074,12 +2500,17 @@ paths:
       tags:
       - Documents
       summary: Retrieve a document's stored text
-      description: "Returns the document's full text body when it is retained: retained\
+      description: "Returns the document's full text body when it is retained: always\
         \ for text-ingested documents, and for file-uploaded documents unless they\
         \ were uploaded with `storeText=false` (which discards the extracted text\
         \ once indexing completes — the original file remains available via `GET /v1/documents/{id}/download`).\
         \ Returns 404 when the document does not exist, its text was not retained,\
-        \ or extraction has not yet completed. Requires the `documents:r` scope."
+        \ extraction has not yet completed, or no text could be extracted from its\
+        \ file (see the document's `extraction`). To read a long text in parts, pass\
+        \ `limit` (and `offset` from the second part on): offsets and lengths count\
+        \ Unicode characters (code points), `totalLength` is the length of the whole\
+        \ text, and `nextOffset` is where the next part starts, absent once the end\
+        \ is reached. Requires the `documents:r` scope."
       operationId: getDocumentText
       parameters:
       - name: id
@@ -2087,13 +2518,37 @@ paths:
         required: true
         schema:
           type: string
+      - name: offset
+        in: query
+        description: "Where the returned text starts, in Unicode characters (code\
+          \ points) from the start of the text. Defaults to 0. Pass the previous part's\
+          \ `nextOffset` to read on."
+        schema:
+          minimum: 0
+          type: integer
+          format: int32
+          default: 0
+        example: 0
+      - name: limit
+        in: query
+        description: The most characters (code points) to return. Omit it to return
+          the text from `offset` to the end.
+        schema:
+          minimum: 1
+          type: integer
+          format: int32
+        example: 10000
       responses:
         "200":
-          description: The document's text body.
+          description: "The document's text body, or the part of it that `offset`\
+            \ and `limit` select."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/DocumentTextResponse"
+        "400":
+          description: "`offset` or `limit` is not a whole number in range, or `offset`\
+            \ is past the end of the text."
         "404":
           description: "The document does not exist, is outside your access scope,\
             \ or has no stored text available."
@@ -2371,9 +2826,12 @@ paths:
         description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
           \ page to fetch the next page; omit it for the first page. The cursor is\
           \ **opaque** — echo it back unchanged, and do not parse it or construct\
-          \ one. Keep every other query parameter identical while paging: a cursor\
-          \ is valid only for the exact query that returned it, and reusing one against\
-          \ a different query is rejected with a 400."
+          \ one. Keep every other query parameter identical while paging. A cursor\
+          \ is checked against the part of the query that decides where the listing\
+          \ reads, so reusing it with, for example, a different folder or owner is\
+          \ refused with a 400; not every change to the other parameters is detected,\
+          \ though, and a cursor reused after one returns pages that match neither\
+          \ query."
         schema:
           type: string
         example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
@@ -3012,9 +3470,12 @@ paths:
         description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
           \ page to fetch the next page; omit it for the first page. The cursor is\
           \ **opaque** — echo it back unchanged, and do not parse it or construct\
-          \ one. Keep every other query parameter identical while paging: a cursor\
-          \ is valid only for the exact query that returned it, and reusing one against\
-          \ a different query is rejected with a 400."
+          \ one. Keep every other query parameter identical while paging. A cursor\
+          \ is checked against the part of the query that decides where the listing\
+          \ reads, so reusing it with, for example, a different folder or owner is\
+          \ refused with a 400; not every change to the other parameters is detected,\
+          \ though, and a cursor reused after one returns pages that match neither\
+          \ query."
         schema:
           type: string
         example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
@@ -3755,10 +4216,11 @@ paths:
       description: "Returns the whole platform model catalog, whatever your plan:\
         \ `availableOn` names each model's plan tiers. Each entry also carries the\
         \ context window and the credit rates per 1K input and output tokens: `regionPricing.base`\
-        \ for global-region requests, `regionPricing.us` for default requests, and\
-        \ `longContext` for prompts over its threshold. A model reached through a\
-        \ `providerAlias` is not listed. Use this to populate model pickers and to\
-        \ validate a request before calling `/v1/chat`, `/v1/rag`, or `/v1/documents/{id}/ask`."
+        \ for global-region requests, `regionPricing.us` for default requests, `longContext`\
+        \ for prompts over its threshold, and `cachePricing` for prompt-cache tokens\
+        \ on a model that has cache prices. A model reached through a `providerAlias`\
+        \ is not listed. Use this to populate model pickers and to validate a request\
+        \ before calling `/v1/chat`, `/v1/rag`, or `/v1/documents/{id}/ask`."
       operationId: listInferenceModels
       responses:
         "200":
@@ -4311,9 +4773,12 @@ paths:
         description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
           \ page to fetch the next page; omit it for the first page. The cursor is\
           \ **opaque** — echo it back unchanged, and do not parse it or construct\
-          \ one. Keep every other query parameter identical while paging: a cursor\
-          \ is valid only for the exact query that returned it, and reusing one against\
-          \ a different query is rejected with a 400."
+          \ one. Keep every other query parameter identical while paging. A cursor\
+          \ is checked against the part of the query that decides where the listing\
+          \ reads, so reusing it with, for example, a different folder or owner is\
+          \ refused with a 400; not every change to the other parameters is detected,\
+          \ though, and a cursor reused after one returns pages that match neither\
+          \ query."
         schema:
           type: string
         example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
@@ -4821,9 +5286,12 @@ paths:
         description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
           \ page to fetch the next page; omit it for the first page. The cursor is\
           \ **opaque** — echo it back unchanged, and do not parse it or construct\
-          \ one. Keep every other query parameter identical while paging: a cursor\
-          \ is valid only for the exact query that returned it, and reusing one against\
-          \ a different query is rejected with a 400."
+          \ one. Keep every other query parameter identical while paging. A cursor\
+          \ is checked against the part of the query that decides where the listing\
+          \ reads, so reusing it with, for example, a different folder or owner is\
+          \ refused with a 400; not every change to the other parameters is detected,\
+          \ though, and a cursor reused after one returns pages that match neither\
+          \ query."
         schema:
           type: string
         example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
@@ -5004,6 +5472,131 @@ paths:
             \ history is kept."
       security:
         - BearerAuth: []
+  /v1/runs/{id}/cancel:
+
+    post:
+      tags:
+      - Agents
+      summary: Cancel a run
+      description: "Stops a run. The answer is `202` with the run still `RUNNING`:\
+        \ read it with `GET /v1/runs/{id}` to see it end. A model call in progress\
+        \ is cut within a few seconds; a tool call in progress is first allowed to\
+        \ finish, for up to about 30 seconds, so its change is recorded and billed,\
+        \ and the run stops as soon as it has. The run then ends `CANCELLED` with\
+        \ `errorCode` `CANCELLED_BY_CALLER`, unless it had already completed, in which\
+        \ case it stays `COMPLETED`. Its reservation is settled once, like any run's:\
+        \ a model call in progress when it stopped is charged up to its maximum. A\
+        \ run that has ended (or that had not started, which this cancel ends) answers\
+        \ `200` with its final state, so a cancel can always be retried. A run can\
+        \ be cancelled by the credential that started it (for a token bound to a user,\
+        \ by that user) and by your root key. Requires the `runs:c` scope; with `runs:r`\
+        \ as well the answer is the whole run, otherwise only its `id`, `status`,\
+        \ `terminal`, `reason` and `errorCode`. Takes no body."
+      operationId: cancelRun
+      parameters:
+      - name: contextId
+        in: query
+        description: The app context the run is in. Only a credential that is not
+          confined to one app context (a root key) may name another context; a confined
+          credential naming a context other than its own gets `403`. Omit it to use
+          your credential's context (`default` for a root key).
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "The run has ended: it had already ended (nothing changed),\
+            \ or it had not started and this cancel ended it. The run as it ended."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "202":
+          description: "The cancel is recorded and the run stops within one step.\
+            \ The run, still running."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "400":
+          description: The `contextId` is malformed.
+        "401":
+          description: The API key or bearer token is missing or invalid.
+        "403":
+          description: "Your credential lacks the `runs:c` scope, or names an app\
+            \ context other than its own."
+        "404":
+          description: "No run with this id is visible to you: it does not exist,\
+            \ has expired, is in another app context, or was started by another credential.\
+            \ Or the named app context does not exist."
+        "429":
+          description: You have exceeded the per-minute request limit for your account. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your limit. See the rate limits guide for the per-plan limits and recommended backoff.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. After this many seconds the rate-limit window resets and the request can be retried.
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              description: The maximum number of requests permitted per minute on your plan.
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Requests remaining in the current window. Always 0 on a 429 response.
+              schema:
+                type: integer
+      security:
+        - BearerAuth: []
+  /v1/runs/{id}:
+
+    get:
+      tags:
+      - Agents
+      summary: Get a run
+      description: "Returns the status and metadata of one run: the agent version\
+        \ that ran, how it ended, its tool calls (never their arguments or results)\
+        \ and what it was charged. It never returns text: the answer is delivered\
+        \ only in the run's stream. A run is visible to the credential that started\
+        \ it (for a token bound to a user, to that user) and to your root key, and\
+        \ is kept for 30 days after it ends. Requires the `runs:r` scope."
+      operationId: getRun
+      parameters:
+      - name: contextId
+        in: query
+        description: The app context the run is in. Only a credential that is not
+          confined to one app context (a root key) may name another context; a confined
+          credential naming a context other than its own gets `403`. Omit it to use
+          your credential's context (`default` for a root key).
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "400":
+          description: The `contextId` is malformed.
+        "401":
+          description: The API key or bearer token is missing or invalid.
+        "403":
+          description: "Your credential lacks the `runs:r` scope, or names an app\
+            \ context other than its own."
+        "404":
+          description: "No run with this id is visible to you: it does not exist,\
+            \ has expired, is in another app context, or was started by another credential.\
+            \ Or the named app context does not exist."
+      security:
+        - BearerAuth: []
   /v1/schemas:
 
     get:
@@ -5083,9 +5676,12 @@ paths:
         description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
           \ page to fetch the next page; omit it for the first page. The cursor is\
           \ **opaque** — echo it back unchanged, and do not parse it or construct\
-          \ one. Keep every other query parameter identical while paging: a cursor\
-          \ is valid only for the exact query that returned it, and reusing one against\
-          \ a different query is rejected with a 400."
+          \ one. Keep every other query parameter identical while paging. A cursor\
+          \ is checked against the part of the query that decides where the listing\
+          \ reads, so reusing it with, for example, a different folder or owner is\
+          \ refused with a 400; not every change to the other parameters is detected,\
+          \ though, and a cursor reused after one returns pages that match neither\
+          \ query."
         schema:
           type: string
         example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
@@ -5609,8 +6205,9 @@ paths:
         "400":
           description: '`?latest=true` was passed without `name`.'
         "404":
-          description: '`?latest=true` was passed and no version of `name` exists
-            in your account.'
+          description: "`?latest=true` was passed and no version of `name` could be\
+            \ found: none exists, or (briefly, just after many of its newest versions\
+            \ were deleted) the newest cannot be determined yet; retry shortly."
       security:
         - BearerAuth: []
     post:
@@ -5661,7 +6258,11 @@ paths:
         "409":
           description: "Another request pushed a new version of this script name at\
             \ the same moment as this one. List `GET /v1/scripts?name=<name>` to find\
-            \ the current latest version, then push again."
+            \ the current latest version, then push again. Also answered, with nothing\
+            \ pushed, for a few seconds when the newest version of this name cannot\
+            \ be told apart from deleted ones yet (for example just after many of\
+            \ its newest versions were deleted, or while its first version is gone\
+            \ and the listing has not caught up): try again shortly."
         "429":
           description: You have exceeded the per-minute request limit for your account. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5753,7 +6354,12 @@ paths:
         \ does not affect any other version of the same name. Requires the `scripts:d`\
         \ scope. Refused with 409 if a live trigger rule still references this version\
         \ — either directly (a pinned `scriptRef`), or via `\"latest\"` when this\
-        \ IS the newest version of its name. Delete or re-point those rules first."
+        \ IS the newest version of its name. Delete or re-point those rules first.\
+        \ Also refused with a retryable 409, deleting nothing, when it cannot be told\
+        \ yet whether this is the newest version (for example just after several of\
+        \ this name's newest versions were deleted, or while its first version is\
+        \ gone and the listing has not caught up) and a `\"latest\"` rule depends\
+        \ on the script: try again shortly."
       operationId: deleteScript
       parameters:
       - name: id
@@ -5769,7 +6375,12 @@ paths:
         "409":
           description: "A live trigger rule still references this script version —\
             \ directly by a pinned `scriptRef`, or (when this is the newest version\
-            \ of its name) via `\"latest\"`. Delete or re-point those rules first."
+            \ of its name) via `\"latest\"`. Delete or re-point those rules first.\
+            \ Also answered, with nothing deleted, when it cannot be told yet whether\
+            \ this is the newest version (for example just after several of this name's\
+            \ newest versions were deleted, or while its first version is gone and\
+            \ the listing has not caught up) and a `\"latest\"` rule depends on the\
+            \ script: try again shortly."
         "429":
           description: You have exceeded the per-minute request limit for your account. Read the `Retry-After` response header for the number of seconds to wait before retrying, and the `X-RateLimit-Limit` header for your limit. See the rate limits guide for the per-plan limits and recommended backoff.
           headers:
@@ -5936,9 +6547,12 @@ paths:
         description: "Pagination cursor. Pass the `nextCursor` returned by the previous\
           \ page to fetch the next page; omit it for the first page. The cursor is\
           \ **opaque** — echo it back unchanged, and do not parse it or construct\
-          \ one. Keep every other query parameter identical while paging: a cursor\
-          \ is valid only for the exact query that returned it, and reusing one against\
-          \ a different query is rejected with a 400."
+          \ one. Keep every other query parameter identical while paging. A cursor\
+          \ is checked against the part of the query that decides where the listing\
+          \ reads, so reusing it with, for example, a different folder or owner is\
+          \ refused with a 400; not every change to the other parameters is detected,\
+          \ though, and a cursor reused after one returns pages that match neither\
+          \ query."
         schema:
           type: string
         example: b3BhcXVlLWN1cnNvci1mcm9tLXRoZS1wcmV2aW91cy1wYWdl
@@ -6087,16 +6701,21 @@ paths:
         "400":
           description: "The request body failed validation (for example, `externalId`\
             \ is missing or the payload does not match the bound schema, or `?upsert=true`\
-            \ would set a user whose invitation has not been accepted to `ACTIVE`);\
-            \ or a user with the same `externalId` already exists but your credential\
-            \ can't be shown it — reported as an \"already exists\" error instead\
-            \ of the user, whether because your credential lacks the `users:r` scope\
-            \ or because it is context-confined and the existing user holds no access\
-            \ profile in your credential's own app context."
+            \ would set a user whose invitation has not been accepted to `ACTIVE`,\
+            \ or would take the account owner's user out of `ACTIVE`); or a user with\
+            \ the same `externalId` already exists but your credential can't be shown\
+            \ it — reported as an \"already exists\" error instead of the user, whether\
+            \ because your credential lacks the `users:r` scope or because it is context-confined\
+            \ and the existing user holds no access profile in your credential's own\
+            \ app context."
         "403":
           description: "Your API key or token lacks the `users:c` scope required to\
             \ create a user (or, with `?upsert=true`, the `users:u` scope required\
-            \ to overwrite it)."
+            \ to overwrite it); or, with `?upsert=true`, the existing user is the\
+            \ account owner and your credential is not the owner's (only the account's\
+            \ root API key, or a scoped API key bound to the account owner (not one\
+            \ created by delegation from another key), may change the account owner's\
+            \ user)."
         "409":
           description: "With `?upsert=true`: another write deleted or kept changing\
             \ the user while it was updated (`errorCode` `VERSION_CONFLICT`). Send\
@@ -6210,7 +6829,14 @@ paths:
             \ to `PENDING`, which is server-managed and cannot be set here — including\
             \ by echoing a pending user's own status back in a read-modify-write,\
             \ so omit `status` from the body when updating a pending user's other\
-            \ fields."
+            \ fields; or `status` would take the account owner's user out of `ACTIVE`:\
+            \ the account owner can never be suspended (transfer ownership first)."
+        "403":
+          description: "Your credential lacks the `users:u` scope; or the user is\
+            \ the account owner and your credential is not the owner's. Only the account's\
+            \ root API key, or a scoped API key bound to the account owner (not one\
+            \ created by delegation from another key), may change the account owner's\
+            \ user; a scoped token never counts as the owner."
         "404":
           description: No user with the given ID exists in your account. A context-confined
             credential also sees this when the user exists but holds no access profile
@@ -6259,6 +6885,13 @@ paths:
       responses:
         "204":
           description: The user was deleted. No content is returned.
+        "403":
+          description: "The user is the account owner and your credential is not the\
+            \ owner's: only the account's root API key, or a scoped API key bound\
+            \ to the account owner (not one created by delegation from another key),\
+            \ may delete the account owner's user. On an account whose ownership is\
+            \ recorded, deleting its last owner answers `409` to every credential\
+            \ instead (see below)."
         "404":
           description: No user with the given ID exists in your account. A context-confined
             credential also sees this when the user exists but holds no access profile
@@ -6931,7 +7564,9 @@ paths:
         \ grant is executed, a scoped credential may not declare a trigger whose grant\
         \ exceeds its own — such a request is rejected with a `403`, and a `roleIds`\
         \ entry that does not resolve in this context with a `400`. Requires the `triggers:c`\
-        \ scope (also `triggers:u` when `?upsert=true` matches an existing row)."
+        \ scope (also `triggers:u` when `?upsert=true` matches an existing row). `name`,\
+        \ `firingSource`, `scriptRef`, `fields` and exactly one of `scopes` or `roleIds`\
+        \ are required when declaring a rule."
       operationId: createTrigger
       parameters:
       - name: upsert
@@ -7153,9 +7788,10 @@ paths:
         \ is extracted and used as the system prompt. On a pre-paid account, token\
         \ cost is debited from your inference balance; usage-billed accounts accrue\
         \ it for post-billing. A request routed through your own `providerAlias` incurs\
-        \ no Vectros token cost. A small per-call flat fee is charged to your monthly\
-        \ credit allowance, except when the call fails on the server side. Requires\
-        \ the `inference:r` scope."
+        \ no Vectros token cost. A per-call platform fee is charged to your monthly\
+        \ credit allowance, except when the call fails on the server side: 0.2 credits\
+        \ for a call of up to 60 seconds, then 1 credit per 5 minutes of the call's\
+        \ duration. Requires the `inference:r` scope."
       operationId: chatInference
       requestBody:
         content:
@@ -7187,9 +7823,13 @@ paths:
             \ not available on your plan."
         "403":
           description: "Requested global region without a waiver, OR `providerAlias`\
-            \ is unknown, inactive, not waived (`errorCode` `WAIVER_NOT_SIGNED`, `WAIVER_TEXT_CHANGED`\
-            \ or `WAIVER_REVOKED`), has an unsupported billing mode, or lacks the\
-            \ attestation `providerAlias` describes."
+            \ is unknown, inactive, or its provider waiver is not in force (`errorCode`\
+            \ `WAIVER_NOT_SIGNED` when it was never signed, `WAIVER_TEXT_CHANGED`\
+            \ when the waiver in force for your tenant is no longer current (for example\
+            \ Vectros now requires a newer version), so an account owner must sign\
+            \ the current one, `WAIVER_REVOKED`, or `WAIVER_TEXT_DRAFT` when its wording\
+            \ is not final yet), has an unsupported billing mode, or lacks the attestation\
+            \ `providerAlias` describes."
         "404":
           description: The credential's app context is being deleted.
         "413":
@@ -7223,10 +7863,11 @@ paths:
       - Inference
       summary: Interrogate a single document (streaming)
       description: "Loads a single document's extracted text, supplies it as context,\
-        \ and streams a model answer about it. The document must be fully indexed.\
-        \ If the document exceeds the 32K-token cap, the call returns 413 with no\
-        \ credits charged — use `POST /v1/rag` instead to answer over larger or multi-document\
-        \ collections. Requires the `inference:r` scope."
+        \ and streams a model answer about it. The document must have finished processing\
+        \ and have text. If the document exceeds the 32,000-token input cap (estimated\
+        \ as the stored text's bytes divided by 4, about 128,000 bytes), the call\
+        \ returns 413 with no credits charged — use `POST /v1/rag` instead to answer\
+        \ over larger or multi-document collections. Requires the `inference:r` scope."
       operationId: documentAsk
       requestBody:
         content:
@@ -7258,19 +7899,26 @@ paths:
             \ not available on your plan."
         "403":
           description: "Requested global region without a waiver, OR `providerAlias`\
-            \ is unknown, inactive, not waived (`errorCode` `WAIVER_NOT_SIGNED`, `WAIVER_TEXT_CHANGED`\
-            \ or `WAIVER_REVOKED`), has an unsupported billing mode, or lacks the\
-            \ attestation `providerAlias` describes."
+            \ is unknown, inactive, or its provider waiver is not in force (`errorCode`\
+            \ `WAIVER_NOT_SIGNED` when it was never signed, `WAIVER_TEXT_CHANGED`\
+            \ when the waiver in force for your tenant is no longer current (for example\
+            \ Vectros now requires a newer version), so an account owner must sign\
+            \ the current one, `WAIVER_REVOKED`, or `WAIVER_TEXT_DRAFT` when its wording\
+            \ is not final yet), has an unsupported billing mode, or lacks the attestation\
+            \ `providerAlias` describes."
         "404":
           description: "No document with the given id exists in your account, or the\
             \ credential's app context is being deleted."
         "409":
-          description: "The document is still processing, failed to process, or its\
-            \ text is not retained — it was uploaded with `storeText=false`, which\
-            \ discards the extracted text after indexing — so it cannot be interrogated."
+          description: "The document is still processing, failed to process, its text\
+            \ is not retained — it was uploaded with `storeText=false`, which discards\
+            \ the extracted text after indexing — or no text could be extracted from\
+            \ its file (see the document's `extraction`), so it cannot be interrogated.\
+            \ No credits are charged."
         "413":
           description: "The request body exceeds 1 MiB, or the document exceeds the\
-            \ 32K-token cap (use `POST /v1/rag`)."
+            \ 32,000-token input cap (estimated as the stored text's bytes divided\
+            \ by 4, about 128,000 bytes); use `POST /v1/rag`."
         "429":
           description: "You have exceeded the per-minute rate limit for your account.\
             \ Read the `Retry-After` response header for the number of seconds to\
@@ -7338,9 +7986,13 @@ paths:
             \ not available on your plan."
         "403":
           description: "Requested global region without a waiver, OR `providerAlias`\
-            \ is unknown, inactive, not waived (`errorCode` `WAIVER_NOT_SIGNED`, `WAIVER_TEXT_CHANGED`\
-            \ or `WAIVER_REVOKED`), has an unsupported billing mode, or lacks the\
-            \ attestation `providerAlias` describes."
+            \ is unknown, inactive, or its provider waiver is not in force (`errorCode`\
+            \ `WAIVER_NOT_SIGNED` when it was never signed, `WAIVER_TEXT_CHANGED`\
+            \ when the waiver in force for your tenant is no longer current (for example\
+            \ Vectros now requires a newer version), so an account owner must sign\
+            \ the current one, `WAIVER_REVOKED`, or `WAIVER_TEXT_DRAFT` when its wording\
+            \ is not final yet), has an unsupported billing mode, or lacks the attestation\
+            \ `providerAlias` describes."
         "404":
           description: The credential's app context is being deleted.
         "413":
@@ -7369,6 +8021,144 @@ paths:
         "500":
           description: The search infrastructure encountered an error and the query
             could not be completed.
+      security:
+        - BearerAuth: []
+  /v1/runs:
+
+    post:
+      tags:
+      - Agents
+      summary: Start a run of a stored agent (streaming)
+      description: "Starts a run of a stored agent and streams what it does as Server-Sent\
+        \ Events. The response is always `text/event-stream` once the run has started,\
+        \ whatever `Accept` you send (a request refused before the run starts is answered\
+        \ with JSON); its `X-Vectros-Run-Id` header names the run. The run's tool\
+        \ calls act as you, with your own permissions, and only through the tools\
+        \ the agent lists. On a prepaid account the run reserves its budget from your\
+        \ inference balance when it starts and returns what its model calls did not\
+        \ use when it ends; a fixed fee per run, tool calls and run time are billed\
+        \ separately, against your plan. Read each event's `type`; ignore types and\
+        \ fields you do not know; stop at the event with `terminal: true`. A stream\
+        \ that ends without one: read the run with `GET /v1/runs/{id}`. Closing the\
+        \ stream stops the run only on a best-effort basis. Requires the `runs:c`\
+        \ scope, and agent runs switched on for your tenant by an account owner."
+      operationId: createRun
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: "Makes a retried start safe: 1 to 128 letters, digits, `.`, `_`,\
+          \ `:` or `-`. The same key with the same body never starts a second run;\
+          \ while the key is remembered (at least as long as a run can last) the retry\
+          \ is answered `409` `IDEMPOTENCY_IN_PROGRESS` naming the first run. The\
+          \ same key with a body that is not byte-for-byte identical is `422` `IDEMPOTENCY_KEY_REUSED`."
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+        required: true
+      responses:
+        "200":
+          description: "Server-Sent Events stream of run events: `run.started`, then\
+            \ `message.delta`, `message.completed` and `tool.completed` events, ending\
+            \ with exactly one terminal event (`run.completed`, `run.failed` or `run.cancelled`)."
+          headers:
+            X-Vectros-Run-Id:
+              description: "The run's id, for `GET /v1/runs/{id}`."
+              style: simple
+              schema:
+                type: string
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/RunStreamEvent"
+        "400":
+          description: "The body is malformed or names no stored agent (`INVALID_REQUEST`;\
+            \ an inline definition is refused, and so are a `?contextId=` naming a\
+            \ context other than your credential's own and a `budget.maxInferenceCents`\
+            \ above the agent's own), the `Idempotency-Key` is malformed (`INVALID_IDEMPOTENCY_KEY`),\
+            \ or your `budget.maxInferenceCents` is below the minimum or cannot cover\
+            \ the first model call (`BUDGET_TOO_LOW`, the message names the minimum)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunErrorBody"
+        "401":
+          description: The API key or bearer token is missing or invalid.
+        "402":
+          description: "Your prepaid inference balance cannot cover the run's budget\
+            \ (`INSUFFICIENT_BALANCE`), or your plan's monthly credit limit is reached\
+            \ (`SUBSCRIPTION_LIMIT_EXCEEDED`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunErrorBody"
+        "403":
+          description: "Your credential lacks `runs:c` (`FORBIDDEN`), is a token bound\
+            \ to no user (`RUN_REQUIRES_BOUND_USER`), agent runs are not switched\
+            \ on for your tenant (`AGENT_RUNS_NOT_ENABLED`), or the agent offers a\
+            \ tool your tenant has not switched on (`AGENT_TOOL_NOT_ENABLED`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunErrorBody"
+        "404":
+          description: "No such agent, or no such version of it, in your app context\
+            \ (`AGENT_NOT_FOUND`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunErrorBody"
+        "409":
+          description: "The agent exists but cannot run: it is retired (`AGENT_RETIRED`),\
+            \ the version was purged (`AGENT_VERSION_PURGED`), one of its tools is\
+            \ no longer available (`AGENT_TOOL_UNAVAILABLE`), its model is not available\
+            \ to you (`MODEL_NOT_AVAILABLE`) or not supported in runs (`MODEL_NOT_SUPPORTED_IN_RUNS`),\
+            \ or its budget cannot run (`BUDGET_TOO_LOW`). Or a run with this `Idempotency-Key`\
+            \ exists (`IDEMPOTENCY_IN_PROGRESS`): the body names it in `runId` and\
+            \ `status`, and so does the `X-Vectros-Run-Id` header. That run may already\
+            \ have ended (its `status` says so): a key is never reused, so send a\
+            \ new one to start again."
+          headers:
+            X-Vectros-Run-Id:
+              description: The id of the run this key already started.
+              style: simple
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunErrorBody"
+        "413":
+          description: The request body exceeds 256 KB.
+        "422":
+          description: This `Idempotency-Key` was used with a different body (`IDEMPOTENCY_KEY_REUSED`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunErrorBody"
+        "429":
+          description: "Too many of your runs are in progress (`CONCURRENT_RUN_CAP`)\
+            \ or too much budget is reserved by them (`RUN_HOLD_CAP`): retry after\
+            \ one ends. `BALANCE_BUSY`: retry shortly. Any other `errorCode` names\
+            \ one of your limits or quotas. Read `Retry-After`. Nothing was started."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunErrorBody"
+        "503":
+          description: "A temporary fault before the run started (`errorCode` names\
+            \ it; for example `BALANCE_UNAVAILABLE`, `AGENT_RUNS_SWITCH_UNAVAILABLE`\
+            \ or `RUN_UNAVAILABLE`), or new runs are briefly not accepted (`WRITE_FROZEN`).\
+            \ Read `Retry-After`. Nothing was started, except after `BALANCE_UNAVAILABLE`:\
+            \ a retry with the same `Idempotency-Key` may then be answered `409` naming\
+            \ a run that has already ended; send a new key."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunErrorBody"
       security:
         - BearerAuth: []
 components:
@@ -7473,6 +8263,37 @@ components:
             $ref: "#/components/schemas/Jwk"
       description: A standard JWKS document (RFC 7517) containing the public-key material
         used to verify platform-signed JWTs.
+    ActingViaResponse:
+      type: object
+      properties:
+        kind:
+          type: string
+          description: "The kind of execution. Currently `agent-run`, a run of a stored\
+            \ agent. This is an open set: new kinds may be added without notice, so\
+            \ treat an unrecognized value as a valid kind you do not interpret."
+          example: agent-run
+        actorId:
+          type: string
+          description: "Identifier of the definition that acted. For `agent-run`,\
+            \ the ID of the stored agent."
+          example: 3b1c9f2e7a5d8410f6c2e9a1b7d4038f5e6a91c2d7f0b3a4586c9e2f1d0a7b3c
+        runId:
+          type: string
+          description: "Identifier of the execution that made the call. For `agent-run`,\
+            \ the ID of the run. Treat it as opaque: for other kinds it may be a composite\
+            \ reference."
+          example: 0123456789abcdef0123456789abcdef
+        tool:
+          type: string
+          description: "The tool the execution called to make this call, when it made\
+            \ it through a tool. For `agent-run`, the name of the tool the run called."
+          example: records_update
+      description: "The automated execution through which a call was made on behalf\
+        \ of the credential that authorized it, such as a tool call made by an agent\
+        \ run. Present only for calls made by such an execution; absent for calls\
+        \ made directly with a credential. It does not replace the credential: the\
+        \ caller named on the same entry remains the party whose authority the call\
+        \ used."
     ReadAccessLogPage:
       type: object
       properties:
@@ -7582,6 +8403,8 @@ components:
             \ endpoint address the call is sent to, as saved on the provider configuration\
             \ when the call was made (host only, no path). Null for every other read."
           example: api.anthropic.com
+        actingVia:
+          $ref: "#/components/schemas/ActingViaResponse"
         createdAt:
           type: string
           description: When the read occurred / the row was recorded (ISO-8601 UTC).
@@ -7877,6 +8700,229 @@ components:
           example: "[{\"kind\":\"key\",\"sub\":\"usr_alice\",\"handle\":\"key_delegator\"\
             }]"
       description: A single API call as recorded after the request completed.
+    AgentBudget:
+      type: object
+      properties:
+        maxInferenceCents:
+          type: integer
+          description: "The most a run of this agent may spend on model calls, in\
+            \ US cents, up to 500. A minimum applies; a value of 1 or more but below\
+            \ the minimum is refused with errorCode `BUDGET_TOO_LOW`, whose message\
+            \ names the minimum; a value outside 1 to 500 is a plain `400`. Defaults\
+            \ to 100."
+          format: int64
+          example: 100
+      description: The per-run spending cap of an agent.
+    AgentLimits:
+      type: object
+      properties:
+        maxSteps:
+          type: integer
+          description: "The most model calls in one run, 1-25. Defaults to 10."
+          format: int32
+          example: 10
+        maxTokensPerCall:
+          type: integer
+          description: "The most output tokens of one model call's answer, 16-8192.\
+            \ Defaults to 2048. On a model that reasons, the call's limit is this\
+            \ number plus an allowance for reasoning, and reasoning counts against\
+            \ that same limit, so a long reasoning can leave less than this number\
+            \ for the answer. A reply cut off at the limit is continued in a further\
+            \ model call, which counts toward `maxSteps`, a limited number of times\
+            \ per run; after that the run ends with `OUTPUT_LIMIT_REACHED`."
+          format: int32
+          example: 2048
+        maxToolCalls:
+          type: integer
+          description: "The most tool calls in one run, 0-50. Defaults to 20; at least\
+            \ 1 when tools are listed."
+          format: int32
+          example: 20
+        maxWrites:
+          type: integer
+          description: "The most tool calls in one run that create, change or delete\
+            \ data, 0-1000. Defaults to 0; at least 1 when a tool has `allowWrites:\
+            \ true`."
+          format: int32
+          example: 0
+      description: Per-run limits of an agent.
+    AgentResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: "The agent's id: stable across its versions and derived from\
+            \ its app context and name (opaque; do not assume a format)."
+          example: 3b1c9f2e7a5d8410f6c2e9a1b7d4038f5e6a91c2d7f0b3a4586c9e2f1d0a7b3c
+        name:
+          type: string
+          description: The agent's name.
+          example: intake-triage
+        description:
+          type: string
+          description: What the agent is for.
+          example: Summarises a new intake record and flags missing fields.
+        status:
+          type: string
+          description: "`ACTIVE`, `RETIRED` or `PURGED`. Treat a value you do not\
+            \ recognise as not `ACTIVE`."
+          example: ACTIVE
+        latestVersion:
+          type: integer
+          description: The agent's newest version.
+          format: int32
+          example: 3
+        version:
+          type: integer
+          description: The version this response describes.
+          format: int32
+          example: 3
+        authority:
+          type: string
+          description: Whose identity the agent's tool calls run with.
+          example: CALLER
+        model:
+          type: string
+          description: The model the agent runs on.
+          example: claude-sonnet-5-5
+        system:
+          type: string
+          description: The agent's system prompt.
+        tools:
+          type: array
+          description: The agent's tool whitelist.
+          items:
+            $ref: "#/components/schemas/AgentToolEntry"
+        limits:
+          $ref: "#/components/schemas/AgentLimits"
+        budget:
+          $ref: "#/components/schemas/AgentBudget"
+        createdAt:
+          type: string
+          description: When this version was written (ISO-8601).
+          example: 2026-10-25T12:00:00Z
+        createdBy:
+          type: string
+          description: The principal that wrote this version.
+          example: key:key_1a2b3c
+        purgedAt:
+          type: string
+          description: "When this version's content was erased (ISO-8601), or absent."
+        purgedBy:
+          type: string
+          description: "The principal that erased this version's content, or absent."
+          example: key:key_1a2b3c
+        provisionedBy:
+          type: string
+          description: "The name of the blueprint that manages this agent, or absent."
+          example: clinical-intake
+        created:
+          type: boolean
+          description: "On create: `true` when this request created the agent, `false`\
+            \ when an agent of this name already existed and was returned (or, with\
+            \ `?upsert=true`, reconciled)."
+      description: "A stored agent. A caller holding `runs:c` but not `agents:r` sees\
+        \ only `id`, `name`, `description`, `latestVersion` and `status`. A purged\
+        \ version carries no content."
+    AgentToolEntry:
+      required:
+      - name
+      type: object
+      properties:
+        name:
+          type: string
+          description: The tool's name in the tool catalog.
+          example: records_query
+        allowWrites:
+          type: boolean
+          description: "Required `true` for a tool that creates, changes or deletes\
+            \ data, and stored as given for any tool. When any entry has it, `limits.maxWrites`\
+            \ must be at least 1. Defaults to `false`."
+          example: false
+      description: One entry of an agent's tool whitelist.
+    AgentDefinitionRequest:
+      required:
+      - model
+      type: object
+      properties:
+        name:
+          type: string
+          description: "The agent's name, unique in its app context: 1-64 letters,\
+            \ digits, underscores or hyphens. Required on create; on update it may\
+            \ be omitted, and if present it must equal the agent's name."
+          example: intake-triage
+        description:
+          type: string
+          description: "What the agent is for, shown wherever the agent is listed.\
+            \ At most 500 characters."
+          example: Summarises a new intake record and flags missing fields.
+        authority:
+          type: string
+          description: "Whose identity the agent's tool calls run with. `CALLER` (the\
+            \ default, and the only value accepted today): every tool call runs with\
+            \ the identity and permissions of the caller who starts the run, further\
+            \ limited by the tool whitelist. Other values may be added; a value this\
+            \ server does not support is refused with `400`."
+          example: CALLER
+        model:
+          type: string
+          description: "The model the agent runs on, by its id in the model catalog.\
+            \ It must be a model agents can run on: another catalog model is refused\
+            \ with errorCode `MODEL_NOT_SUPPORTED_IN_RUNS`."
+          example: claude-sonnet-5-5
+        system:
+          type: string
+          description: "The agent's system prompt. At most 32,000 characters."
+          example: You triage intake records. Be concise.
+        tools:
+          type: array
+          description: "The tools a run of this agent may call, by name from the tool\
+            \ catalog. At most 50, each named once. A tool that creates, changes or\
+            \ deletes data needs `allowWrites: true`."
+          items:
+            $ref: "#/components/schemas/AgentToolEntry"
+        limits:
+          $ref: "#/components/schemas/AgentLimits"
+        budget:
+          $ref: "#/components/schemas/AgentBudget"
+        expectedVersion:
+          type: integer
+          description: "On update: the `latestVersion` you read. If the agent has\
+            \ a newer version, the update is refused with `409` and errorCode `VERSION_CONFLICT`,\
+            \ and nothing is written."
+          format: int32
+          example: 3
+        provisionedBy:
+          type: string
+          description: "The name of the blueprint that manages this agent, or omitted\
+            \ for an agent you manage yourself. Set once; it cannot change."
+          example: clinical-intake
+      description: "A stored agent definition: its model, system prompt, tool whitelist,\
+        \ limits and budget. On an update every optional field you leave out takes\
+        \ its default in the new version; `model` is required."
+    AgentPage:
+      type: object
+      properties:
+        data:
+          type: array
+          description: "The items on this page, in the endpoint's natural order. Empty\
+            \ when there are no results."
+          items:
+            $ref: "#/components/schemas/AgentResponse"
+        nextCursor:
+          type: string
+          description: "An opaque cursor for the next page. Pass it back as the `startFrom`\
+            \ query parameter to continue paging; null when there are no more results.\
+            \ **Treat it as opaque** — echo it back unmodified, and never parse, construct,\
+            \ store long-term or compare it. Its format is unspecified, differs between\
+            \ endpoints, and changes between releases. A cursor is valid only for\
+            \ the exact query that returned it: keep every other parameter identical\
+            \ while paging."
+          nullable: true
+          example: b3BhcXVlLWN1cnNvci1kby1ub3QtcGFyc2U
+      description: "A page of agents (or of one agent's versions) as a `{data, nextCursor}`\
+        \ envelope. `nextCursor` is an opaque cursor — pass it back as `startFrom`\
+        \ to fetch the next page, or null when no more pages remain."
     AccessProfileResponse:
       type: object
       properties:
@@ -8401,8 +9447,6 @@ components:
         \ action is permitted if any clause allows it and that clause's data scope\
         \ matches the target."
     AccessProfileRequest:
-      required:
-      - principalId
       type: object
       properties:
         principalId:
@@ -8641,9 +9685,6 @@ components:
       description: "An app context: a namespace you define to group access profiles\
         \ and roles for one of your applications."
     AppContextRequest:
-      required:
-      - contextId
-      - name
       type: object
       properties:
         contextId:
@@ -8656,7 +9697,8 @@ components:
           example: myapp
         name:
           type: string
-          description: Human-readable display name for this app context. Required.
+          description: "Human-readable display name for this app context. Required\
+            \ when creating; on update, omit it to keep the current name."
           example: My Internal App
         description:
           type: string
@@ -8803,10 +9845,6 @@ components:
       description: "A role: a named, reusable set of scope clauses that can be assigned\
         \ to users independently of any one identity."
     RoleRequest:
-      required:
-      - name
-      - roleId
-      - scopes
       type: object
       properties:
         roleId:
@@ -8819,7 +9857,8 @@ components:
           example: engineering-member
         name:
           type: string
-          description: A human-readable display name for the role.
+          description: "A human-readable display name for the role. Required when\
+            \ creating; on update, omit it to keep the current name."
           example: Engineering Team Member
         description:
           type: string
@@ -8844,7 +9883,9 @@ components:
             \ the match on `POST /v1/entities/{namespace}`. It is matched normally\
             \ on every read, update, and delete — so a clause whose data scope names\
             \ only that dimension does not restrict what you may create, and an entity\
-            \ created under one may fall outside it once it exists."
+            \ created under one may fall outside it once it exists. Required when\
+            \ creating; on update, omit it to keep the current clauses (a list you\
+            \ send replaces them)."
           items:
             $ref: "#/components/schemas/ScopeClause"
         assumable:
@@ -8950,7 +9991,7 @@ components:
           - DELETE
         previousContent:
           type: string
-          description: "A JSON-encoded snapshot of the record's full state immediately\
+          description: "A JSON-encoded snapshot of the item's full state immediately\
             \ before this change. Deserialize it to inspect the previous payload,\
             \ ownership, and other fields. Present on UPDATE and DELETE entries; null\
             \ on CREATE."
@@ -8958,8 +9999,8 @@ components:
             notes\":\"original note\"}}"
         previousVersion:
           type: integer
-          description: The record's version number immediately before this change.
-            Null on CREATE.
+          description: The item's version number immediately before this change. Null
+            on CREATE.
           format: int64
           example: 1
         changeReason:
@@ -8970,6 +10011,8 @@ components:
           type: string
           description: Identifier of the user or API key that made the change.
           example: user_abc123
+        actingVia:
+          $ref: "#/components/schemas/ActingViaResponse"
         createdAt:
           type: string
           description: "Time this version-history entry was recorded, as an ISO-8601\
@@ -8977,8 +10020,9 @@ components:
           example: 2024-01-15T09:30:00Z
         changedFields:
           $ref: "#/components/schemas/ModelChanges"
-      description: "A single entry in a record's audit-trail version history. Returned\
-        \ by GET /v1/records/{id}/versions."
+      description: "A single entry in the audit-trail version history of a record,\
+        \ document, entity, user, folder, schema, role or access profile. Returned\
+        \ by the `.../versions` routes of those resources."
     AccessProfilePage:
       type: object
       properties:
@@ -9402,7 +10446,8 @@ components:
           example: 150
         inputTokens:
           type: integer
-          description: Total input tokens consumed across all calls
+          description: "Input tokens other than prompt-cache tokens, across all calls.\
+            \ Cache tokens are counted separately in `cacheReadTokens` and `cacheCreateTokens`."
           format: int64
           example: 45000
         outputTokens:
@@ -9410,6 +10455,18 @@ components:
           description: Total output tokens generated across all calls
           format: int64
           example: 12000
+        cacheReadTokens:
+          type: integer
+          description: Input tokens served from the prompt cache across all calls.
+            0 when no call read the cache.
+          format: int64
+          example: 0
+        cacheCreateTokens:
+          type: integer
+          description: "Input tokens written to the prompt cache across all calls,\
+            \ whatever the cache lifetime. 0 when no call wrote to the cache."
+          format: int64
+          example: 0
       description: "Inference call counters: invocations and token throughput"
     InferenceEndpoints:
       type: object
@@ -9424,12 +10481,13 @@ components:
     InferenceSection:
       type: object
       properties:
-        balanceCents:
+        balanceCentsMilli:
           type: integer
-          description: Pre-paid inference balance in cents (used to settle model token
-            costs)
+          description: "Pre-paid inference balance in milli-cents (thousandths of\
+            \ a cent; 1 cent = 1000), used to settle model token costs. Token costs\
+            \ are charged to the nearest milli-cent, never rounded to whole cents."
           format: int64
-          example: 12500
+          example: 12500000
         endpoints:
           $ref: "#/components/schemas/InferenceEndpoints"
         totals:
@@ -9757,6 +10815,52 @@ components:
       description: "Write counts and credits for a schema-driven surface (documents\
         \ / identity). Same shape as record writes: a base count plus the extra schema-lookup-field\
         \ writes, with the combined credits."
+    DocumentExtraction:
+      type: object
+      properties:
+        outcome:
+          type: string
+          description: "A stable, machine-readable extraction outcome. Branch on this\
+            \ value rather than on `message`. `OK` — the full text was extracted.\
+            \ `TRUNCATED` — text was extracted, but not all of it: only the first\
+            \ 1,000,000 characters are kept, or the file holds more than 1,000 embedded\
+            \ documents (archive entries, attachments, embedded objects; images do\
+            \ not count) and the rest were not read. What was kept is searchable and\
+            \ readable. `NO_TEXT` — the file holds no extractable text, for example\
+            \ an image or a scanned page. `ENCRYPTED` — the file is password-protected.\
+            \ `UNSUPPORTED` — the file format cannot be read. `TOO_LARGE` — the file\
+            \ is larger than 100 MiB (104,857,600 bytes), the largest file whose text\
+            \ is extracted. `UNREADABLE` — the file is corrupt or could not be read.\
+            \ For every outcome other than `OK` and `TRUNCATED` the document has no\
+            \ text: `GET /v1/documents/{id}/text` returns 404, `POST /v1/documents/{id}/ask`\
+            \ returns 409, and the document is searchable only by the values of its\
+            \ schema's declared-searchable fields: its `indexStatus` is SKIPPED when\
+            \ it has none (STORED for `indexMode: NONE`), and INDEXED on those values\
+            \ when it has them. The original file remains available via `GET /v1/documents/{id}/download`.\
+            \ New values may be added: treat an unrecognized value as no text."
+          example: OK
+          enum:
+          - OK
+          - TRUNCATED
+          - NO_TEXT
+          - ENCRYPTED
+          - UNSUPPORTED
+          - TOO_LARGE
+          - UNREADABLE
+        truncated:
+          type: boolean
+          description: True when only part of the file's text was kept (`outcome`
+            is TRUNCATED).
+          example: false
+        message:
+          type: string
+          description: "A human-readable explanation of the outcome, suitable for\
+            \ showing to an end user. Wording may change between releases: branch\
+            \ on `outcome` instead."
+          example: The full text was extracted.
+      description: "How text extraction went for a file-uploaded document. Absent\
+        \ for text-ingested documents, for a file whose extraction has not finished,\
+        \ and for files extracted before this field existed."
     DocumentResponse:
       type: object
       properties:
@@ -9809,11 +10913,12 @@ components:
             \ can surface without waiting on the vector index, on a best-effort basis\
             \ that is not guaranteed. A query that can only match a document semantically\
             \ (a `mode: SEMANTIC` search, or a HYBRID/RAG query sharing no words with\
-            \ the document) has no such fallback. SKIPPED means extraction produced\
-            \ no indexable text so there was nothing to index — the document is stored\
-            \ and retrievable, just not searchable (not an error); STORED means it\
-            \ is store-only (indexMode=NONE) — persisted and retrievable but by design\
-            \ not searchable; FAILED means processing failed."
+            \ the document) has no such fallback. SKIPPED means there was no indexable\
+            \ text, so there was nothing to index — the document is stored and retrievable,\
+            \ just not searchable (not an error). For a file document, `extraction`\
+            \ says why its file yielded no text; STORED means it is store-only (indexMode=NONE)\
+            \ — persisted and retrievable but by design not searchable; FAILED means\
+            \ processing failed."
           example: INDEXED
           enum:
           - PENDING_UPLOAD
@@ -9826,6 +10931,8 @@ components:
           - FAILED
         indexFailure:
           $ref: "#/components/schemas/IndexFailure"
+        extraction:
+          $ref: "#/components/schemas/DocumentExtraction"
         indexMode:
           type: string
           description: "How this document is indexed. HYBRID, SEMANTIC, and TEXT are\
@@ -9896,7 +11003,9 @@ components:
           example: 3
         textBytes:
           type: integer
-          description: "Size of the extracted text, in bytes."
+          description: "Size of the stored text, in bytes (UTF-8). Absent when the\
+            \ document has no stored text, and for file documents extracted before\
+            \ this field was recorded for files."
           format: int64
           example: 4096
         userId:
@@ -9987,13 +11096,12 @@ components:
       description: Why search indexing failed. Present only when the index status
         is FAILED.
     DocumentRequest:
-      required:
-      - title
       type: object
       properties:
         title:
           type: string
-          description: Human-readable document title
+          description: "Human-readable document title. Required when creating; on\
+            \ update, omit it to keep the current title."
           example: Patient Intake Form — Jane Doe
         text:
           type: string
@@ -10283,8 +11391,28 @@ components:
           example: 550e8400-e29b-41d4-a716-446655440000
         text:
           type: string
-          description: Full extracted or ingested text content of the document.
+          description: "The document's extracted or ingested text: all of it, or the\
+            \ part that `offset` and `limit` selected."
           example: Patient presents with hypertension and elevated cholesterol levels.
+        offset:
+          type: integer
+          description: "Where `text` starts in the whole text, in Unicode characters\
+            \ (code points). 0 unless you passed `offset`."
+          format: int32
+          example: 0
+        totalLength:
+          type: integer
+          description: "The length of the whole text, in Unicode characters (code\
+            \ points)."
+          format: int32
+          example: 25000
+        nextOffset:
+          type: integer
+          description: "Where the next part starts, in Unicode characters (code points):\
+            \ pass it as `offset` to read on. Absent when `text` reaches the end of\
+            \ the document's text."
+          format: int32
+          example: 10000
       description: The raw stored text body of a document.
     DocumentPage:
       type: object
@@ -10639,8 +11767,6 @@ components:
       description: An identity entity in your account — a namespaced organizational
         unit you define and control.
     EntityRequest:
-      required:
-      - externalId
       type: object
       properties:
         externalId:
@@ -10654,7 +11780,8 @@ components:
             \ supply a different value to re-point the entity, but it must still be\
             \ unused in that space — moving onto an `externalId` another entity holds\
             \ is rejected with `400`. Two entities therefore cannot swap identifiers\
-            \ directly; move one to a temporary value first."
+            \ directly; move one to a temporary value first. Required when creating;\
+            \ on update, omit it to keep the current value."
           example: team_eng_platform
         name:
           type: string
@@ -11291,13 +12418,12 @@ components:
           example: 5
       description: A folder used to organize your documents and records.
     FolderRequest:
-      required:
-      - name
       type: object
       properties:
         name:
           type: string
-          description: Human-readable display name of the folder. Required.
+          description: "Human-readable display name of the folder. Required when creating;\
+            \ on update, omit it to keep the current name."
           example: Patient Records 2024
         description:
           type: string
@@ -11806,6 +12932,49 @@ components:
             \ is checked against the issuer's own published key set, then discarded\
             \ — it is never stored or used to sign anyone in."
       description: Request body for verifying a registered issuer.
+    CachePricing:
+      required:
+      - base
+      - us
+      type: object
+      properties:
+        base:
+          $ref: "#/components/schemas/CacheRates"
+        us:
+          $ref: "#/components/schemas/CacheRates"
+      description: "A model's prompt-cache credit rates (per 1K tokens) for each region.\
+        \ Present only for a model with prompt-cache prices; a model without it has\
+        \ none. On `/v1/chat`, `/v1/rag` and `/v1/documents/{id}/ask`, input tokens\
+        \ the model provider served from its prompt cache, or wrote to it, are charged\
+        \ these rates instead of the input rate; the `done` event reports them as\
+        \ `cacheReadTokens` and `cacheCreateTokens`. For a model that has `longContext`\
+        \ pricing, these are the rates for a prompt of up to `longContext.promptTokensOver`\
+        \ tokens."
+    CacheRates:
+      required:
+      - read
+      - write1h
+      - write5m
+      type: object
+      properties:
+        read:
+          type: number
+          description: Credits charged per 1K input tokens read from the prompt cache.
+          format: double
+          example: 0.01
+        write5m:
+          type: number
+          description: Credits charged per 1K input tokens written to the prompt cache
+            with a 5-minute lifetime.
+          format: double
+          example: 0.125
+        write1h:
+          type: number
+          description: Credits charged per 1K input tokens written to the prompt cache
+            with a 1-hour lifetime.
+          format: double
+          example: 0.2
+      description: Prompt-cache credit rates (per 1K tokens) for a single region.
     LongContextPricing:
       required:
       - base
@@ -11895,6 +13064,8 @@ components:
           $ref: "#/components/schemas/RegionPricing"
         longContext:
           $ref: "#/components/schemas/LongContextPricing"
+        cachePricing:
+          $ref: "#/components/schemas/CachePricing"
       description: One model in the catalog.
     ModelsResponse:
       required:
@@ -11928,8 +13099,8 @@ components:
           $ref: "#/components/schemas/RegionRates"
         regionPremiumFactor:
           type: number
-          description: Premium multiplier applied to the US rate (1.0 or greater).
-            A value of 1.0 means the US and base rates are equal — no premium.
+          description: Multiplier that turns the base rate into the US rate (1.0 or
+            greater). A value of 1.0 means the US and base rates are equal — no premium.
           format: double
           example: 1.1
         globalAvailable:
@@ -12058,9 +13229,6 @@ components:
         \ envelope. `nextCursor` is an opaque cursor — pass it back as `startFrom`\
         \ to fetch the next page, or null when no more pages remain."
     NamespaceRequest:
-      required:
-      - namespace
-      - specificityRank
       type: object
       properties:
         namespace:
@@ -13017,6 +14185,108 @@ components:
         \ the array of records on this page, and `nextCursor` is an opaque pagination\
         \ cursor. Pass it as `startFrom` to fetch the next page; it is null when no\
         \ more pages remain."
+    Run:
+      required:
+      - id
+      - status
+      - terminal
+      type: object
+      properties:
+        id:
+          type: string
+          description: The run's id (32 lowercase hexadecimal characters).
+          example: 0123456789abcdef0123456789abcdef
+        agentId:
+          type: string
+          description: The stored agent that ran.
+        agentVersion:
+          type: integer
+          description: The version of the agent that ran.
+          format: int32
+          example: 3
+        status:
+          type: string
+          description: "`RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED` or `EXPIRED`.\
+            \ Other values may be added: read `terminal` to know whether the run has\
+            \ ended."
+          example: COMPLETED
+        terminal:
+          type: boolean
+          description: "Whether the run has ended. Use this, not `status`, to stop\
+            \ polling."
+        reason:
+          type: string
+          description: "Why a completed run ended, for example `end_turn` (the agent\
+            \ answered) or `time` (the time limit). Other values may be added. Informational."
+          example: end_turn
+        errorCode:
+          type: string
+          description: "Why a failed, cancelled or expired run ended, in UPPER_SNAKE_CASE\
+            \ (for example `BUDGET_EXCEEDED`, `MAX_STEPS_REACHED`, `OUTPUT_LIMIT_REACHED`,\
+            \ `CANCELLED_BY_CALLER` or `RUN_UNAVAILABLE`). Other values may be added."
+          example: BUDGET_EXCEEDED
+        createdAt:
+          type: string
+          description: When the run started (ISO 8601).
+          example: 2026-10-29T14:00:00Z
+        endedAt:
+          type: string
+          description: When the run ended (ISO 8601); absent while it runs.
+          example: 2026-10-29T14:00:41Z
+        steps:
+          type: integer
+          description: The model calls the run made.
+          format: int32
+          example: 2
+        toolCalls:
+          type: array
+          description: "The run's tool calls, in order: the tool and how each ended,\
+            \ never its arguments or result."
+          items:
+            $ref: "#/components/schemas/RunToolCall"
+        usage:
+          $ref: "#/components/schemas/RunUsage"
+      description: "The status and metadata of one agent run. It carries no text:\
+        \ the answer is delivered only in the run's stream."
+    RunToolCall:
+      type: object
+      properties:
+        toolCallId:
+          type: string
+          description: The call's id within the run.
+          example: tc-1-0
+        tool:
+          type: string
+          description: The tool's name.
+          example: records_query
+        outcome:
+          type: string
+          description: "How the call ended: `OK`, `TOOL_ERROR`, `UNKNOWN` (a change\
+            \ whose result was lost: check before repeating it) or `ABANDONED` (it\
+            \ never finished); absent while it runs. A call the run refused is not\
+            \ listed. Other values may be added."
+          example: OK
+        at:
+          type: string
+          description: When the call last changed state (ISO 8601).
+          example: 2026-10-29T14:00:12Z
+      description: "One tool call of a run: metadata only."
+    RunUsage:
+      type: object
+      properties:
+        inferenceBalanceCentsChargedMilli:
+          type: integer
+          description: "Charged, in milli-cents."
+          format: int64
+          example: 1234
+        inferenceBalanceCentsRefundedMilli:
+          type: integer
+          description: "Returned to your balance from the run's reservation, in milli-cents."
+          format: int64
+          example: 28766
+      description: "What a run was charged and refunded on your inference balance,\
+        \ in milli-cents (1 cent = 1000). A usage-billed account is billed for its\
+        \ usage afterwards, and both amounts are 0."
     FieldDef:
       required:
       - fieldId
@@ -13354,19 +14624,17 @@ components:
       description: "A record schema, defining the structure and behavior of a record\
         \ type."
     SchemaRequest:
-      required:
-      - allowedSurfaces
-      - displayName
-      - typeName
       type: object
       properties:
         typeName:
           type: string
-          description: Unique type identifier for this schema. Immutable after creation.
+          description: "Unique type identifier for this schema. Required when creating;\
+            \ immutable after creation, so it is ignored on update."
           example: intake_form
         displayName:
           type: string
-          description: "Human-readable display name for this type, shown in UIs."
+          description: "Human-readable display name for this type, shown in UIs. Required\
+            \ when creating; on update, omit it to keep the current name."
           example: Client Intake Form
         description:
           type: string
@@ -13452,7 +14720,8 @@ components:
         allowedSurfaces:
           type: array
           description: "Which typed surfaces may bind this schema by its id: `record`,\
-            \ `document`, `user`, or `entity`. Required and must be non-empty. Identity\
+            \ `document`, `user`, or `entity`. Required when creating, and must be\
+            \ non-empty; on update, omit it to keep the current surfaces. Identity\
             \ entities in ANY namespace — `org`, `client`, or one you registered,\
             \ such as `team` — bind under the single `entity` surface; use the schema's\
             \ `typeName` to distinguish them, not the surface. A schema may list several\
@@ -13471,7 +14740,8 @@ components:
           items:
             type: string
             description: "Which typed surfaces may bind this schema by its id: `record`,\
-              \ `document`, `user`, or `entity`. Required and must be non-empty. Identity\
+              \ `document`, `user`, or `entity`. Required when creating, and must\
+              \ be non-empty; on update, omit it to keep the current surfaces. Identity\
               \ entities in ANY namespace — `org`, `client`, or one you registered,\
               \ such as `team` — bind under the single `entity` surface; use the schema's\
               \ `typeName` to distinguish them, not the surface. A schema may list\
@@ -14477,15 +15747,14 @@ components:
           example: auth0|abc123
       description: A user identity that you control within your account.
     UserRequest:
-      required:
-      - externalId
       type: object
       properties:
         externalId:
           type: string
           description: "Your own unique identifier for this user. Drives idempotent\
             \ upsert: if a user with this `externalId` already exists, it is returned\
-            \ instead of creating a duplicate."
+            \ instead of creating a duplicate. Required when creating; on update,\
+            \ omit it to keep the current value."
           example: usr_12345
         email:
           type: string
@@ -14500,9 +15769,10 @@ components:
             \ scoped API keys stop authenticating within minutes; already-issued tokens\
             \ run out their remaining lifetime and cannot be renewed). `PENDING` is\
             \ a server-managed state for invitations awaiting acceptance and cannot\
-            \ be set on this endpoint: send only `ACTIVE` or `SUSPENDED`. (A pending\
-            \ user becomes `ACTIVE` by sending status=ACTIVE together with `inviteToken`,\
-            \ `externalSubject`, and `emailVerifiedAttestation=true`.)"
+            \ be set on this endpoint: send only `ACTIVE` or `SUSPENDED`. The account\
+            \ owner's user can never be set to `SUSPENDED`. (A pending user becomes\
+            \ `ACTIVE` by sending status=ACTIVE together with `inviteToken`, `externalSubject`,\
+            \ and `emailVerifiedAttestation=true`.)"
           example: ACTIVE
           enum:
           - ACTIVE
@@ -15078,17 +16348,14 @@ components:
       description: A declared trigger rule. A record write on the named schema runs
         the referenced script asynchronously under this rule's own grant.
     TriggerRuleRequest:
-      required:
-      - firingSource
-      - name
-      - scriptRef
       type: object
       properties:
         name:
           type: string
           description: "Your own identifier for the trigger rule, unique within your\
             \ app context. Must be 1-64 characters of letters, digits, underscores\
-            \ ('_'), and hyphens ('-'). Immutable once created; ignored on update."
+            \ ('_'), and hyphens ('-'). Required when declaring a rule. Immutable\
+            \ once created; ignored on update."
           example: on-intake-create
         firingSource:
           $ref: "#/components/schemas/FiringSourceRequest"
@@ -15119,16 +16386,15 @@ components:
           description: "Optional operation manifest: the host-object verbs this trigger's\
             \ script may call (e.g. 'records.update'), narrowing its grant further\
             \ for this usage only. ENFORCED at execution: a verb outside the manifest\
-            \ is refused even when the grant would allow it. An entry names one of\
-            \ the three host-object namespaces and one of its verbs — 'records.<verb>'\
-            \ and 'documents.<verb>' each offer create/get/update/delete/query/lookup,\
-            \ and 'folders.<verb>' offers create/get/update/delete/query (folders\
-            \ have no lookup). An unrecognized entry is rejected with a 400 listing\
-            \ the recognized set. On CREATE, omitting this field (or sending an empty\
-            \ list) means no manifest (the full grant applies). On UPDATE (PUT), omitting\
-            \ this field leaves the trigger's EXISTING manifest unchanged — it does\
-            \ NOT clear it; send an explicit empty list ([]) to remove a manifest\
-            \ restriction and return to the full grant."
+            \ is refused even when the grant would allow it. An entry is '<namespace>.<verb>':\
+            \ 'records.' and 'entities.' offer create/get/update/delete/query/lookup;\
+            \ 'documents.' offers the same six plus 'text'; 'folders.' offers create/get/update/delete/query;\
+            \ 'search.' offers 'content'. An unrecognized entry is rejected with a\
+            \ 400 listing the recognized set. On CREATE, omitting this field (or sending\
+            \ an empty list) means no manifest (the full grant applies). On UPDATE\
+            \ (PUT), omitting this field leaves the trigger's EXISTING manifest unchanged\
+            \ — it does NOT clear it; send an explicit empty list ([]) to remove a\
+            \ manifest restriction and return to the full grant."
           example:
           - records.get
           - documents.create
@@ -15139,15 +16405,15 @@ components:
               \ trigger's script may call (e.g. 'records.update'), narrowing its grant\
               \ further for this usage only. ENFORCED at execution: a verb outside\
               \ the manifest is refused even when the grant would allow it. An entry\
-              \ names one of the three host-object namespaces and one of its verbs\
-              \ — 'records.<verb>' and 'documents.<verb>' each offer create/get/update/delete/query/lookup,\
-              \ and 'folders.<verb>' offers create/get/update/delete/query (folders\
-              \ have no lookup). An unrecognized entry is rejected with a 400 listing\
-              \ the recognized set. On CREATE, omitting this field (or sending an\
-              \ empty list) means no manifest (the full grant applies). On UPDATE\
-              \ (PUT), omitting this field leaves the trigger's EXISTING manifest\
-              \ unchanged — it does NOT clear it; send an explicit empty list ([])\
-              \ to remove a manifest restriction and return to the full grant."
+              \ is '<namespace>.<verb>': 'records.' and 'entities.' offer create/get/update/delete/query/lookup;\
+              \ 'documents.' offers the same six plus 'text'; 'folders.' offers create/get/update/delete/query;\
+              \ 'search.' offers 'content'. An unrecognized entry is rejected with\
+              \ a 400 listing the recognized set. On CREATE, omitting this field (or\
+              \ sending an empty list) means no manifest (the full grant applies).\
+              \ On UPDATE (PUT), omitting this field leaves the trigger's EXISTING\
+              \ manifest unchanged — it does NOT clear it; send an explicit empty\
+              \ list ([]) to remove a manifest restriction and return to the full\
+              \ grant."
             example: "[\"records.get\",\"documents.create\",\"folders.create\"]"
         fields:
           type: array
@@ -15223,7 +16489,9 @@ components:
         \ declared, the rule fires: a record write on the named schema runs the referenced\
         \ script asynchronously under this rule's own grant, with `input.record` carrying\
         \ the fields the rule declares in `fields`. A scoped credential may not declare\
-        \ a grant exceeding its own."
+        \ a grant exceeding its own. When declaring a rule, `name`, `firingSource`,\
+        \ `scriptRef`, `fields` and exactly one of `scopes` or `roleIds` are required;\
+        \ on update, omit any of them to keep the stored value."
     TriggerRulePage:
       type: object
       properties:
@@ -15288,7 +16556,7 @@ components:
     DoneEvent:
       required:
       - event
-      - inferenceBalanceCentsCharged
+      - inferenceBalanceCentsChargedMilli
       - inputTokens
       - model
       - outputTokens
@@ -15308,8 +16576,9 @@ components:
           - done
         inputTokens:
           type: integer
-          description: "Total input tokens consumed by the model, including the system\
-            \ prompt and all messages."
+          description: "Input tokens other than prompt-cache tokens, including the\
+            \ system prompt and all messages. Cache tokens are reported separately\
+            \ in `cacheReadTokens` and `cacheCreateTokens`."
           format: int32
         outputTokens:
           type: integer
@@ -15320,24 +16589,35 @@ components:
           description: The model alias used for this call.
         platformCreditsCharged:
           type: number
-          description: Credits debited from your monthly plan allowance for this call's
-            per-call platform overhead. One credit equals one cent.
+          description: "Credits debited from your monthly plan allowance for this\
+            \ call's platform fee: 0.2 credits for a call of up to 60 seconds, then\
+            \ 1 credit per 5 minutes of the call's duration, so a longer call is charged\
+            \ more. One credit equals one cent."
           format: double
-        inferenceBalanceCentsCharged:
+        inferenceBalanceCentsChargedMilli:
           type: integer
-          description: Cents of model token cost for this call. Settled against your
-            pre-paid inference balance (or added to your period usage on usage billing);
-            0 for a call routed through `providerAlias`.
+          description: "Model token cost charged for this call, in milli-cents (thousandths\
+            \ of a cent; 1 cent = 1000). Rounded to the nearest milli-cent, never\
+            \ to whole cents. Settled against your pre-paid inference balance (or\
+            \ added to your period usage on usage billing); 0 for a call routed through\
+            \ `providerAlias`."
           format: int64
         cacheReadTokens:
           type: integer
-          description: Number of input tokens served from the prompt cache. Present
-            only when the call reports a non-zero count.
+          description: "Number of input tokens served from the prompt cache. Present\
+            \ only when the call reports a non-zero count. On a model with `cachePricing`\
+            \ (`GET /v1/models`), charged at its cache read rate and included in `inferenceBalanceCentsChargedMilli`;\
+            \ on a model without it, not charged on its own. Not charged on a call\
+            \ routed through `providerAlias`."
           format: int32
         cacheCreateTokens:
           type: integer
-          description: Number of input tokens written to the prompt cache. Present
-            only when the call reports a non-zero count.
+          description: "Number of input tokens written to the prompt cache. Present\
+            \ only when the call reports a non-zero count. On a model with `cachePricing`\
+            \ (`GET /v1/models`), charged at its cache write rate for the cache lifetime\
+            \ used and included in `inferenceBalanceCentsChargedMilli`; on a model\
+            \ without it, not charged on its own. Not charged on a call routed through\
+            \ `providerAlias`."
           format: int32
       description: Terminal event emitted after the model finishes or the stream ends
         cleanly. Reports total token usage and the billing breakdown for this call.
@@ -16028,3 +17308,379 @@ components:
           example: false
       description: "Configuration for the retrieval step: search mode, result limit,\
         \ filters, and ownership/folder scope."
+    RunCancelledEvent:
+      required:
+      - runId
+      - seq
+      - terminal
+      - type
+      type: object
+      properties:
+        runId:
+          type: string
+          description: The run.
+        seq:
+          type: integer
+          description: The event's place in the stream; a delta carries the number
+            of the block it belongs to.
+          format: int32
+        terminal:
+          type: boolean
+          description: '`true` on the one event that ends the stream.'
+        status:
+          type: string
+          description: "`COMPLETED`, `FAILED`, `CANCELLED` or `EXPIRED`. Other values\
+            \ may be added."
+        reason:
+          type: string
+          description: "Why the run ended. On a completed run, `end_turn` or `time`;\
+            \ on a failed or cancelled run it names the cause, usually the same value\
+            \ as `errorCode` (for example `BUDGET_EXCEEDED`). Informational: branch\
+            \ on `errorCode`."
+        settled:
+          type: boolean
+          description: "Whether the run's charge was settled as the stream ended.\
+            \ If it was not, read the amounts with `GET /v1/runs/{id}`."
+        inferenceBalanceCentsChargedMilli:
+          type: integer
+          description: "Charged to your inference balance, in milli-cents (1 cent\
+            \ = 1000); present when this stream settled the run."
+          format: int64
+        inferenceBalanceCentsRefundedMilli:
+          type: integer
+          description: "Returned to your inference balance, in milli-cents; present\
+            \ when this stream settled the run."
+          format: int64
+        type:
+          type: string
+          description: Always `run.cancelled`.
+          enum:
+          - run.cancelled
+        errorCode:
+          type: string
+          description: "Why, in UPPER_SNAKE_CASE (for example `CANCELLED_BY_CALLER`).\
+            \ Other values may be added."
+      description: "The run was stopped before it ended (it was cancelled, or the\
+        \ client disconnected). Terminal."
+    RunCompletedEvent:
+      required:
+      - runId
+      - seq
+      - terminal
+      - type
+      type: object
+      properties:
+        runId:
+          type: string
+          description: The run.
+        seq:
+          type: integer
+          description: The event's place in the stream; a delta carries the number
+            of the block it belongs to.
+          format: int32
+        terminal:
+          type: boolean
+          description: '`true` on the one event that ends the stream.'
+        status:
+          type: string
+          description: "`COMPLETED`, `FAILED`, `CANCELLED` or `EXPIRED`. Other values\
+            \ may be added."
+        reason:
+          type: string
+          description: "Why the run ended. On a completed run, `end_turn` or `time`;\
+            \ on a failed or cancelled run it names the cause, usually the same value\
+            \ as `errorCode` (for example `BUDGET_EXCEEDED`). Informational: branch\
+            \ on `errorCode`."
+        settled:
+          type: boolean
+          description: "Whether the run's charge was settled as the stream ended.\
+            \ If it was not, read the amounts with `GET /v1/runs/{id}`."
+        inferenceBalanceCentsChargedMilli:
+          type: integer
+          description: "Charged to your inference balance, in milli-cents (1 cent\
+            \ = 1000); present when this stream settled the run."
+          format: int64
+        inferenceBalanceCentsRefundedMilli:
+          type: integer
+          description: "Returned to your inference balance, in milli-cents; present\
+            \ when this stream settled the run."
+          format: int64
+        type:
+          type: string
+          description: Always `run.completed`.
+          enum:
+          - run.completed
+      description: The run ended normally. Terminal.
+    RunFailedEvent:
+      required:
+      - runId
+      - seq
+      - terminal
+      - type
+      type: object
+      properties:
+        runId:
+          type: string
+          description: The run.
+        seq:
+          type: integer
+          description: The event's place in the stream; a delta carries the number
+            of the block it belongs to.
+          format: int32
+        terminal:
+          type: boolean
+          description: '`true` on the one event that ends the stream.'
+        status:
+          type: string
+          description: "`COMPLETED`, `FAILED`, `CANCELLED` or `EXPIRED`. Other values\
+            \ may be added."
+        reason:
+          type: string
+          description: "Why the run ended. On a completed run, `end_turn` or `time`;\
+            \ on a failed or cancelled run it names the cause, usually the same value\
+            \ as `errorCode` (for example `BUDGET_EXCEEDED`). Informational: branch\
+            \ on `errorCode`."
+        settled:
+          type: boolean
+          description: "Whether the run's charge was settled as the stream ended.\
+            \ If it was not, read the amounts with `GET /v1/runs/{id}`."
+        inferenceBalanceCentsChargedMilli:
+          type: integer
+          description: "Charged to your inference balance, in milli-cents (1 cent\
+            \ = 1000); present when this stream settled the run."
+          format: int64
+        inferenceBalanceCentsRefundedMilli:
+          type: integer
+          description: "Returned to your inference balance, in milli-cents; present\
+            \ when this stream settled the run."
+          format: int64
+        type:
+          type: string
+          description: Always `run.failed`.
+          enum:
+          - run.failed
+        errorCode:
+          type: string
+          description: "Why, in UPPER_SNAKE_CASE (for example `BUDGET_EXCEEDED`, `MAX_STEPS_REACHED`,\
+            \ `OUTPUT_LIMIT_REACHED` or `MODEL_ERROR`). Other values may be added."
+      description: The run failed. Terminal.
+    RunMessageCompletedEvent:
+      required:
+      - runId
+      - seq
+      - terminal
+      - type
+      type: object
+      properties:
+        runId:
+          type: string
+          description: The run.
+        seq:
+          type: integer
+          description: The event's place in the stream; a delta carries the number
+            of the block it belongs to.
+          format: int32
+        terminal:
+          type: boolean
+          description: '`true` on the one event that ends the stream.'
+        type:
+          type: string
+          description: Always `message.completed`.
+          enum:
+          - message.completed
+        step:
+          type: integer
+          description: The model call it belongs to.
+          format: int32
+        text:
+          type: string
+          description: The text.
+      description: One model call's complete answer text.
+    RunMessageDeltaEvent:
+      required:
+      - runId
+      - seq
+      - terminal
+      - type
+      type: object
+      properties:
+        runId:
+          type: string
+          description: The run.
+        seq:
+          type: integer
+          description: The event's place in the stream; a delta carries the number
+            of the block it belongs to.
+          format: int32
+        terminal:
+          type: boolean
+          description: '`true` on the one event that ends the stream.'
+        type:
+          type: string
+          description: Always `message.delta`.
+          enum:
+          - message.delta
+        text:
+          type: string
+          description: The text.
+      description: The next piece of the agent's answer.
+    RunStartedEvent:
+      required:
+      - runId
+      - seq
+      - terminal
+      - type
+      type: object
+      properties:
+        runId:
+          type: string
+          description: The run.
+        seq:
+          type: integer
+          description: The event's place in the stream; a delta carries the number
+            of the block it belongs to.
+          format: int32
+        terminal:
+          type: boolean
+          description: '`true` on the one event that ends the stream.'
+        type:
+          type: string
+          description: Always `run.started`.
+          enum:
+          - run.started
+        agentId:
+          type: string
+          description: The stored agent that runs.
+        agentVersion:
+          type: integer
+          description: The version that runs.
+          format: int32
+      description: The run started.
+    RunStreamEvent:
+      type: object
+      description: "One Server-Sent Event of a run (every frame's SSE `event:` line\
+        \ is `run.event`). The `type` field discriminates the event. Ignore a `type`\
+        \ or a field you do not know. The stream may also carry Server-Sent Events\
+        \ comment lines (a line that starts with a colon, such as `: keepalive`) about\
+        \ every 15 seconds while the run works; a stream parser you write yourself\
+        \ must skip them."
+      discriminator:
+        propertyName: type
+      oneOf:
+      - $ref: "#/components/schemas/RunStartedEvent"
+      - $ref: "#/components/schemas/RunMessageDeltaEvent"
+      - $ref: "#/components/schemas/RunMessageCompletedEvent"
+      - $ref: "#/components/schemas/RunToolCompletedEvent"
+      - $ref: "#/components/schemas/RunCompletedEvent"
+      - $ref: "#/components/schemas/RunFailedEvent"
+      - $ref: "#/components/schemas/RunCancelledEvent"
+    RunToolCompletedEvent:
+      required:
+      - runId
+      - seq
+      - terminal
+      - type
+      type: object
+      properties:
+        runId:
+          type: string
+          description: The run.
+        seq:
+          type: integer
+          description: The event's place in the stream; a delta carries the number
+            of the block it belongs to.
+          format: int32
+        terminal:
+          type: boolean
+          description: '`true` on the one event that ends the stream.'
+        type:
+          type: string
+          description: Always `tool.completed`.
+          enum:
+          - tool.completed
+        step:
+          type: integer
+          description: The model call that asked for it.
+          format: int32
+        toolCallId:
+          type: string
+          description: The call's id within the run.
+        tool:
+          type: string
+          description: The tool's name.
+        outcome:
+          type: string
+          description: "`OK`, `TOOL_ERROR`, `DENIED` or `ERROR`. Other values may\
+            \ be added."
+        code:
+          type: string
+          description: "A short code in UPPER_SNAKE_CASE: `OK` when the call succeeded,\
+            \ otherwise why it did not."
+      description: "A tool call ended: its name and outcome, never its arguments or\
+        \ result."
+    RunErrorBody:
+      type: object
+      properties:
+        message:
+          type: string
+          description: A sentence for a person.
+        errorCode:
+          type: string
+          description: "The reason, in UPPER_SNAKE_CASE. Other values may be added."
+        statusCode:
+          type: integer
+          description: The HTTP status.
+          format: int32
+        runId:
+          type: string
+          description: "With `IDEMPOTENCY_IN_PROGRESS`: the run this key started."
+        status:
+          type: string
+          description: "With `IDEMPOTENCY_IN_PROGRESS`: that run's status."
+      description: Why a run was not started. Nothing was started and nothing was
+        charged.
+    CreateRunRequest:
+      required:
+      - agentId
+      - input
+      type: object
+      properties:
+        agentId:
+          type: string
+          description: The stored agent to run.
+        agentVersion:
+          minimum: 1
+          type: integer
+          description: The version to run; defaults to the latest.
+          format: int32
+          example: 3
+        input:
+          $ref: "#/components/schemas/RunInput"
+        budget:
+          $ref: "#/components/schemas/RunBudget"
+        readOnly:
+          type: boolean
+          description: "When `true`, every tool that would change data is refused\
+            \ in this run."
+          default: false
+      description: "A run of a stored agent. A run never carries a definition: name\
+        \ the agent."
+    RunBudget:
+      type: object
+      properties:
+        maxInferenceCents:
+          type: integer
+          description: "The most this run's model calls may cost, in cents: at least\
+            \ the minimum and at most the agent's budget."
+          format: int32
+      description: "A budget for one run, which may only lower the agent's."
+    RunInput:
+      required:
+      - text
+      type: object
+      properties:
+        text:
+          maxLength: 100000
+          type: string
+          description: "The input text, 1 to 100,000 characters."
+      description: What the run is asked.

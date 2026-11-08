@@ -11,7 +11,7 @@ MCP server), with a CLI for provisioning.
 The current surface spans: Documents and structured Records (with schema-defined
 indexing, lookup/range queries, and folders), hybrid Search (BM25 + vector, RRF
 fusion), grounded inference (chat, RAG, document-ask, model catalog), the
-Scripts and trigger rules, webhooks, end-subject erasure, the Identity plane (users, plus identity entities in any namespace — `org` and
+Scripts and trigger rules, webhooks, stored agents and runs, end-subject erasure, the Identity plane (users, plus identity entities in any namespace — `org` and
 `client` are reserved names, and you register any namespace before use), isolation
 with scoped keys and app-contexts, read-access logging,
 and billing/usage reporting.
@@ -25,9 +25,9 @@ Most integrations should NOT hand-roll HTTP. Reach for a client:
   that drives the API, so method names and types match it exactly. For TypeScript:
   `npm install @vectros-ai/sdk`, construct one client with a token and environment,
   then call sub-clients grouped by area (`records`, `schemas`, `documents`,
-  `folders`, `search`, `inference`, `identity`, `auth`, `scripts`, `triggers`).
+  `folders`, `search`, `inference`, `identity`, `auth`, `scripts`, `triggers`, `agents`).
 - **CLI (`@vectros-ai/cli`, `vectros`)** — provision from a terminal or CI:
-  blueprints, app-contexts, identities, scoped keys, and a one-command MCP
+  blueprints, app-contexts, identities, scoped keys, stored agents, and a one-command MCP
   credential bootstrap (`npx -y @vectros-ai/cli bootstrap`). No code, no handling
   your root key directly.
 - **MCP server (`@vectros-ai/mcp-server`)** — see below.
@@ -37,7 +37,7 @@ Most integrations should NOT hand-roll HTTP. Reach for a client:
 Vectros ships an official **Model Context Protocol** server
 (`@vectros-ai/mcp-server`) that exposes the data plane to MCP-aware agents
 (Claude Desktop, Cursor, Cline, Continue, VS Code, hosted platforms) as callable
-tools — search, records, documents, folders, and grounded inference — with no
+tools — search, records, documents, folders, grounded inference, and runs of your stored agents — with no
 custom integration code. Drop one entry into the agent's MCP config:
 
 ```json
@@ -54,7 +54,7 @@ custom integration code. Drop one entry into the agent's MCP config:
 
 It is a thin shim over the SDK: tenant isolation and scope enforcement hold
 exactly as on the API — running the server does not expand a credential's reach.
-The tools are data-plane only (no web or third-party tools). Use a scoped
+The 26 tools are data-plane tools (running an agent needs agent runs switched on by an account owner); the server itself makes no call to the web. A stored agent you run through it can fetch a public web page when its definition lists web fetch, and web fetch needs an account owner to switch it on. Use a scoped
 permanent key (`ssk_*`) for desktop installs; the CLI `bootstrap` mints one and
 merges the config for you. Full details: https://docs.vectros.ai/guides/clients/mcp/
 
@@ -88,6 +88,13 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      `requiredHeaderName`, send that header with the exact `requiredHeaderValue` on the PUT:
      it is part of the URL's signature, and a PUT without it is rejected with `403`.
    - The system indexes automatically after the PUT completes.
+   - A file with no extractable text (an image, a scanned page, a password-protected or unreadable file)
+     is stored and stays downloadable, but has no searchable text: its `indexStatus` is `SKIPPED`
+     (`STORED` with `indexMode: NONE`; `INDEXED` on its declared-searchable field values when its schema
+     has any) and `extraction.outcome` says why. Extraction keeps up to 1,000,000 characters of a file and
+     reports a longer one as `TRUNCATED`. Branch on `extraction.outcome`, not on `message`.
+   - `GET /v1/documents/{id}/text` reads a long text in parts: pass `offset` and `limit` (both count
+     characters), and read on from `nextOffset` while it is present.
 
 3. **Hybrid Search (BM25 + Vector — RRF fusion):**
    - `POST /v1/search` fuses BM25 text scoring and semantic vector similarity via
@@ -165,6 +172,7 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      `TEXT_INDEX_FAILED`, `EMBEDDING_FAILED`, `INDEXING_FAILED`,
      `VECTOR_LIMIT_EXCEEDED`, `INTERNAL`). When polling, treat FAILED as terminal —
      do not wait for INDEXED — and branch on `indexFailure.code`, not on message text.
+     `SKIPPED` is terminal too: the item has no indexable text, so there is nothing to wait for.
    - Register webhooks to receive `document.indexed`, `document.failed`,
      `record.indexed`, `record.failed` events. The envelope's `data` carries
      `userId` and `scopes` when present — the same ownership spelling as REST — and,
@@ -216,6 +224,10 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      carry `Retry-After`) mean the balance step did not complete: do not top up, retry after the
      delay. A request that names a `providerAlias` whose waiver is not in force answers `403` with
      `errorCode` `WAIVER_NOT_SIGNED`, `WAIVER_TEXT_CHANGED` or `WAIVER_REVOKED`.
+   - On those routes the `done` event reports what the call drew from the pre-paid balance in milli-cents,
+     in `inferenceBalanceCentsChargedMilli` (1 cent = 1000: divide by 1000 for cents). The usage report's
+     `inference` section reports the remaining balance in milli-cents, in `balanceCentsMilli`. Amounts you
+     send stay in whole cents.
    - Set `reasoning: "stream"` on those three routes to receive a reasoning model's reasoning as
      `reasoning_delta` stream events before the answer; the default `"omit"` sends none.
 
