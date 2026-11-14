@@ -84,7 +84,12 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 2. **The File Upload Handshake (CRITICAL — never skip this):**
    - Files are NOT sent as multipart/form-data to the API.
    - Step 1: `POST /v1/documents/upload` with `fileName` and `fileType` (and optionally `indexMode`) → get `uploadUrl`
-   - Step 2: HTTP PUT the raw file bytes directly to `uploadUrl`, with `Content-Type` set to the `fileType` you sent. If the response carries
+   - `fileType` is any `type/subtype` media type (optional: inferred from the `fileName` extension when omitted). It is a label:
+     text is extracted only from document formats (text, CSV, Markdown, JSON, YAML, HTML, XML, PDF, RTF, Office, OpenDocument,
+     EPUB, e-mail), detected from the file's content. Audio, video, images and archives (zip, rar) are stored but not read:
+     their `extraction.outcome` is `NOT_EXTRACTED`.
+   - Step 2: HTTP PUT the raw file bytes directly to `uploadUrl`, with `Content-Type` set to the `fileType` you sent (it is stored
+     with the file and served on download). If the response carries
      `requiredHeaderName`, send that header with the exact `requiredHeaderValue` on the PUT:
      it is part of the URL's signature, and a PUT without it is rejected with `403`.
    - The system indexes automatically after the PUT completes.
@@ -219,8 +224,10 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      earlier answers `404`. A `POST /v1/entities/{namespace}?upsert=true` can answer `409` or `404` the same way.
    - `DELETE /v1/schemas/{id}` answers `409` while records, documents, variants, trigger rules, users or
      entities still use the schema.
-   - On `POST /v1/chat`, `POST /v1/rag` and `POST /v1/documents/{id}/ask`: `402` means the pre-paid
-     balance is short. `429` with `errorCode` `BALANCE_BUSY` and `503` with `BALANCE_UNAVAILABLE` (both
+   - On `POST /v1/chat`, `POST /v1/rag` and `POST /v1/documents/{id}/ask`: `402` with `errorCode`
+     `INSUFFICIENT_BALANCE` means the pre-paid balance is short; `402` with `SUBSCRIPTION_LIMIT_EXCEEDED`
+     means a plan or account limit stopped the call (the monthly credit limit or overage cap, the usage cap, or a model the
+     plan does not include), and topping up does not help. `429` with `errorCode` `BALANCE_BUSY` and `503` with `BALANCE_UNAVAILABLE` (both
      carry `Retry-After`) mean the balance step did not complete: do not top up, retry after the
      delay. A request that names a `providerAlias` whose waiver is not in force answers `403` with
      `errorCode` `WAIVER_NOT_SIGNED`, `WAIVER_TEXT_CHANGED` or `WAIVER_REVOKED`.
@@ -236,7 +243,7 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      an optional `granted_capabilities` array alongside `allowed_actions` and
      `data_scope`. A capability grants a bounded, cross-context effect the
      `resource:ops` verb grammar cannot express on its own.
-   - Six names are recognized in this release. `member-lifecycle`: create and
+   - Eight names are recognized in this release. `member-lifecycle`: create and
      remove identities in app contexts the credential can already reach.
      `forensic-read`: read the access log across every context in the tenant
      (adds to, does not replace, the `access-log:r` action). `context-directory-read`:
@@ -251,7 +258,13 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      name a control-plane resource (`keys`, `profiles`, `users`,
      `app-contexts`, `access-log`, `scripts`, any op) or the bare wildcard `*`
      (0.44.0 — a trigger's grant executes unattended on every matching write,
-     for as long as the rule exists).
+     for as long as the rule exists). `public-publish`: set, change or remove a
+     schema's `publicView`, or add a field to a public record type. `script-egress-declare`: Required to declare,
+     in a pushed script version's `optInOperations`, the operation this
+     capability is mapped to; it grants nothing else.
+     Its reach is the credential's own app context. It is refused when a
+     self-signup policy creates a profile, checked at that moment rather than
+     continuously.
    - The list is closed and versioned with the API. An absent or empty array
      grants nothing (silence, not a wildcard). An unrecognized name denies the
      WHOLE clause, including its `allowed_actions`, rather than being dropped.
