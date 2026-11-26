@@ -13,8 +13,9 @@ indexing, lookup/range queries, and folders), hybrid Search (BM25 + vector, RRF
 fusion), grounded inference (chat, RAG, document-ask, model catalog), the
 Scripts and trigger rules, webhooks, stored agents and runs, end-subject erasure, the Identity plane (users, plus identity entities in any namespace — `org` and
 `client` are reserved names, and you register any namespace before use), isolation
-with scoped keys and app-contexts, read-access logging,
-and billing/usage reporting.
+with scoped keys and app-contexts, read-access logging, public records and search
+with publishable keys, atomic increments, script-only write fences, outbound HTTP
+from scripts to approved destinations, geo search, and billing/usage reporting.
 
 ## Recommended integration paths
 
@@ -83,15 +84,16 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
 
 2. **The File Upload Handshake (CRITICAL — never skip this):**
    - Files are NOT sent as multipart/form-data to the API.
-   - Step 1: `POST /v1/documents/upload` with `fileName` and `fileType` (and optionally `indexMode`) → get `uploadUrl`
-   - `fileType` is any `type/subtype` media type (optional: inferred from the `fileName` extension when omitted). It is a label:
-     text is extracted only from document formats (text, CSV, Markdown, JSON, YAML, HTML, XML, PDF, RTF, Office, OpenDocument,
+   - Step 1: `POST /v1/documents/upload` with `fileName`, `fileType` and `size` (the file's exact length in bytes, at least 1;
+     required: without it the request is a `400` `SIZE_REQUIRED`), and optionally `indexMode` → get `uploadUrl`
+   - `fileType` is any `type/subtype` media type (optional: inferred from the `fileName` extension when omitted). It does not
+     decide extraction: text is extracted only from document formats (text, CSV, Markdown, JSON, YAML, HTML, XML, PDF, RTF, Office, OpenDocument,
      EPUB, e-mail), detected from the file's content. Audio, video, images and archives (zip, rar) are stored but not read:
      their `extraction.outcome` is `NOT_EXTRACTED`.
-   - Step 2: HTTP PUT the raw file bytes directly to `uploadUrl`, with `Content-Type` set to the `fileType` you sent (it is stored
-     with the file and served on download). If the response carries
-     `requiredHeaderName`, send that header with the exact `requiredHeaderValue` on the PUT:
-     it is part of the URL's signature, and a PUT without it is rejected with `403`.
+   - Step 2: HTTP PUT the raw file bytes directly to `uploadUrl`, sending every header in the response's `requiredHeaders`
+     with its exact value (it includes the `Content-Type` the URL was signed for, which is stored with the file and served on
+     download). The headers and the length are part of the URL's signature: a PUT without one, with another value, or with a
+     body that is not exactly `size` bytes is rejected with `403`.
    - The system indexes automatically after the PUT completes.
    - A file with no extractable text (an image, a scanned page, a password-protected or unreadable file)
      is stored and stays downloadable, but has no searchable text: its `indexStatus` is `SKIPPED`
@@ -188,6 +190,11 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      nothing. The same records are queryable at `GET /v1/trigger-failures`, which
      also clears a record when a later retry succeeds, so treat that endpoint as
      "what is broken now" rather than as a permanent history.
+   - Register `public_view.changed` to learn when a record of a type with a public
+     view becomes publicly readable, stops being publicly readable (unpublished, archived, deleted or removed after it expired), or, only on a type that sets
+     `purgeListsOnChange`, changes while it stays public. Like the other webhook
+     events, it is sent only to a webhook you have subscribed to it. The payload
+     carries ids and the event, never field values.
    - Webhook payloads are signed with HMAC-SHA256. Verify the
      `X-Vectros-Signature` header (`sha256=<hex>`), computed over the literal
      string `<X-Vectros-Timestamp>.<body>` keyed by the hex-decoded secret.
@@ -243,7 +250,7 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      an optional `granted_capabilities` array alongside `allowed_actions` and
      `data_scope`. A capability grants a bounded, cross-context effect the
      `resource:ops` verb grammar cannot express on its own.
-   - Eight names are recognized in this release. `member-lifecycle`: create and
+   - Nine names are recognized in this release. `member-lifecycle`: create and
      remove identities in app contexts the credential can already reach.
      `forensic-read`: read the access log across every context in the tenant
      (adds to, does not replace, the `access-log:r` action). `context-directory-read`:
@@ -265,6 +272,7 @@ merges the config for you. Full details: https://docs.vectros.ai/guides/clients/
      Its reach is the credential's own app context. It is refused when a
      self-signup policy creates a profile, checked at that moment rather than
      continuously.
+     `write-policy-declare`: widen or remove a record type's write fence (`writePolicy`), or create or change a trigger rule or agent a fence admits; refused at self-signup.
    - The list is closed and versioned with the API. An absent or empty array
      grants nothing (silence, not a wildcard). An unrecognized name denies the
      WHOLE clause, including its `allowed_actions`, rather than being dropped.
